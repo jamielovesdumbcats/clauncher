@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
+	"time"
 
 	"clauncher/pkg/model"
 )
@@ -196,3 +198,67 @@ func (r *CommandRunner) cleanup(ctx context.Context) {
 		r.stopFunc()
 	}
 }
+
+// ListLocalModels runs "llama serve -cl" and parses the output to return a list of locally cached models.
+func ListLocalModels() ([]model.Model, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "llama", "serve", "-cl")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to run llama serve -cl: %w", err)
+	}
+
+	lines := strings.Split(string(output), "\n")
+	var models []model.Model
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// Skip header lines and empty lines
+		if line == "" || strings.Contains(line, "number of models") {
+			continue
+		}
+
+		// Parse lines like "   1. mradermacher/gemma-4-26B-A4B-it-GGUF:IQ4_XS"
+		// Match pattern: N. path:quant
+		parts := strings.SplitN(line, ". ", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		// Extract the model path (without the quant suffix after colon)
+		modelPath := parts[1]
+		if idx := strings.Index(modelPath, ":"); idx != -1 {
+			modelPath = modelPath[:idx]
+		}
+
+		if modelPath == "" {
+			continue
+		}
+
+		// Create a display name from the model path (last component)
+		displayName := modelPath
+		if idx := strings.LastIndex(modelPath, "/"); idx != -1 {
+			// Keep org/repo format but remove -GGUF suffix for cleaner display
+			namePart := modelPath[idx+1:]
+			if idx2 := strings.Index(namePart, "-"); idx2 != -1 {
+				displayName = modelPath[:idx+1] + namePart[:idx2]
+			} else {
+				displayName = modelPath[idx+1:]
+			}
+		}
+
+		models = append(models, model.Model{
+			ID:   strings.ReplaceAll(modelPath, "/", "-"),
+			Name: displayName,
+			Type: model.LlamaCPP,
+			Config: map[string]string{
+				"model_name": parts[1], // Full path with quant
+			},
+		})
+	}
+
+	return models, nil
+}
+

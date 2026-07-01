@@ -38,3 +38,9 @@ func StatusTickCmd() tea.Cmd {
 		return StatusTickMsg{}
 	}
 }
+
+// ModelsRefreshedMsg is sent when the local model list has been refreshed.
+type ModelsRefreshedMsg struct {
+	Models []model.Model
+	Error  error
+}

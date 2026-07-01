@@ -2,8 +2,6 @@ package main
 
 import (
 	"fmt"
-	//"os/exec"
-	//"os"
 
 	"clauncher/pkg/model"
 	"clauncher/pkg/server"
@@ -21,29 +19,25 @@ func LlamaCPPCommandBuilder(m model.Model) (string, []string) {
 }
 
 func main() {
-	fmt.Println("Clauncher starting (Real Runner Test)...")
+	fmt.Println("Clauncher starting...")
 
-	// 1. DEBUG: Print the command we are about to run to the terminal
-	m := model.Model{
-		ID:   "test-model",
-		Name: "Test Model",
-		Type: model.LlamaCPP,
-		Config: map[string]string{
-			"model_name": "mradermacher/gemma-4-26B-A4B-it-GGUF:IQ4_XS",
-		},
+	// Fetch locally installed models
+	localModels, err := server.ListLocalModels()
+	if err != nil {
+		fmt.Printf("Warning: Could not fetch local models: %v\n", err)
+		fmt.Println("Starting with empty model list. Press 'r' to refresh.")
+		localModels = []model.Model{}
+	} else {
+		fmt.Printf("Found %d local models\n", len(localModels))
 	}
 
-	cmdName, cmdArgs := LlamaCPPCommandBuilder(m)
-	fmt.Printf("\n[DEBUG] Attempting to run command: %s %v\n", cmdName, cmdArgs)
-	fmt.Println("[DEBUG] Check if this command works directly in your terminal first!\n")
-
-	// 2. Initialize the runner with the Llama builder
+	// Initialize the runner with the Llama builder
 	runner := server.NewCommandRunner(LlamaCPPCommandBuilder)
 
-	// 3. Initialize the UI app
-	app := ui.NewApp([]model.Model{m}, runner)
+	// Initialize the UI app with the dynamic model list
+	app := ui.NewApp(localModels, runner)
 
-	// 4. Start the Bubble Tea program
+	// Start the Bubble Tea program
 	if _, err := tea.NewProgram(app).Run(); err != nil {
 		fmt.Printf("Error running application: %v\n", err)
 	}

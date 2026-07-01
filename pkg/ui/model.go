@@ -35,6 +35,9 @@ type App struct {
 	// Log state for dashboard
 	logs []string
 
+	// Model refresh state
+	refreshing bool
+
 	// Context for process management
 	ctx      context.Context
 	cancelFn context.CancelFunc
@@ -72,10 +75,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return a, tea.Quit
-		case "1":
-			if len(a.models) > 0 {
-				return a, a.selectModel(0)
-			}
 		case "s":
 			if a.currentView == ViewDashboard {
 				return a, a.toggleProcess()
@@ -84,6 +83,19 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Go back to selection from dashboard
 			if a.currentView == ViewDashboard {
 				return a, a.goBack()
+			}
+		case "r":
+			// Refresh local models list
+			if a.currentView == ViewSelection && !a.refreshing {
+				return a, a.refreshModels()
+			}
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			// Select model by number
+			if a.currentView == ViewSelection {
+				idx := int(m.String()[0] - '1') // Convert '1'-'9' to 0-8
+				if idx >= 0 && idx < len(a.models) {
+					return a, a.selectModel(idx)
+				}
 			}
 		}
 	case messages.ModelSelectedMsg:
@@ -127,6 +139,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tick()
 		}
 		return a, nil
+
+	case messages.ModelsRefreshedMsg:
+		a.refreshing = false
+		if m.Error != nil {
+			a.err = m.Error
+			return a, nil
+		}
+		a.models = m.Models
+		return a, nil
 	}
 
 	return a, nil
@@ -159,7 +180,18 @@ func (a *App) toggleProcess() tea.Cmd {
 func (a *App) goBack() tea.Cmd {
 	a.currentView = ViewSelection
 	a.selectedModel = nil
+	a.err = nil // Clear any error state when returning to selection
 	return nil
+}
+
+// refreshModels triggers a refresh of the local models list
+func (a *App) refreshModels() tea.Cmd {
+	a.refreshing = true
+	a.err = nil // Clear any previous error
+	return func() tea.Msg {
+		models, err := server.ListLocalModels()
+		return messages.ModelsRefreshedMsg{Models: models, Error: err}
+	}
 }
 
 // View renders the current application state.
@@ -181,10 +213,33 @@ func (a *App) View() string {
 // renderSelectionView renders the model selection UI.
 func (a *App) renderSelectionView() string {
 	s := a.theme.Header.Render("Clauncher - Select a Model") + "\n\n"
-	for i, m := range a.models {
-		s += fmt.Sprintf("  %d. %s\n", i+1, m.Name)
+
+	// Show loading indicator if refreshing
+	if a.refreshing {
+		s += "Refreshing model list...\n\n"
 	}
-	s += "\nPress 1 to select the first model, q to quit"
+
+	// Show error if refresh failed
+	if a.err != nil && a.refreshing {
+		s += a.theme.Error.Render(fmt.Sprintf("Error refreshing models: %v\n", a.err)) + "\n"
+	}
+
+	if len(a.models) == 0 {
+		if !a.refreshing {
+			s += "No models found. Press 'r' to refresh the model list.\n"
+		}
+	} else {
+		for i, m := range a.models {
+			s += fmt.Sprintf("  %d. %s\n", i+1, m.Name)
+		}
+	}
+
+	s += "\nPress 1 to select the first model"
+	if len(a.models) > 1 {
+		s += ", 2-N for other models"
+	}
+	s += ", r to refresh list, q to quit"
+
 	return s
 }
 
