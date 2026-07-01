@@ -9,24 +9,38 @@ import (
 	"clauncher/pkg/server"
 )
 
+// LlamaCPPCommandBuilder builds the command for llama serve
+func LlamaCPPCommandBuilder(m model.Model) (string, []string) {
+	// For development/test, we'll use a mock command if possible,
+	// but here we define the real one.
+	// Example: llama serve -hf mradermacher/gemma-4-26B-A4B-it-GGUF:IQ4_XS
+	return "llama", []string{"serve", "-hf", m.Config["model_name"]}
+}
+
 func main() {
-	fmt.Println("Clauncher starting...")
+	fmt.Println("Clauncher starting (Real Runner Test)...")
 
-	// Initialize Mock Runner for development
-	runner := server.NewMockRunner()
-
-	// Define a mock model
+	// Define a mock model with configuration
 	m := model.Model{
 		ID:   "test-model",
 		Name: "Test Model",
 		Type: model.LlamaCPP,
+		Config: map[string]string{
+			"model_name": "mradermacher/gemma-4-26B-A4B-it-GGUF:IQ4_XS",
+		},
 	}
 
-	fmt.Printf("Running test with model: %s\n", m.Name)
+	// Initialize the runner with the Llama builder
+	runner := server.NewCommandRunner(LlamaCPPCommandBuilder)
 
 	// Start the process
+	// Using a context that we can cancel
 	// In a real app, this would be managed by the TUI lifecycle
-	logChan, err := runner.Start(context.Background(), m)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	fmt.Printf("Launching model: %s\n", m.Name)
+	logChan, err := runner.Start(ctx, m)
 	if err != nil {
 		fmt.Printf("Error starting: %v\n", err)
 		return
@@ -41,18 +55,17 @@ func main() {
 		close(done)
 	}()
 
-	// Let it run for 10 seconds
-	fmt.Println("Running for 10 seconds...")
-	time.Sleep(10 * time.Second)
+	// Wait for the context to expire (simulating a timeout or manual stop)
+	<-ctx.Done()
+	fmt.Println("Context expired or finished. Stopping process...")
+	runner.Stop()
 
-	fmt.Println("Stopping process...")
-	if err := runner.Stop(); err != nil {
-		fmt.Printf("Error stopping: %v\n", err)
-	}
-
-	// Wait for log channel to close
+	// Wait for log channel to be closed
 	<-done
 
 	status := runner.Status()
 	fmt.Printf("Final Status: %s\n", status.Status)
+	if status.Error != nil {
+		fmt.Printf("Error: %v\n", status.Error)
+	}
 }
