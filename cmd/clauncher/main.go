@@ -7,6 +7,9 @@ import (
 
 	"clauncher/pkg/model"
 	"clauncher/pkg/server"
+	"clauncher/pkg/ui"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // LlamaCPPCommandBuilder builds the command for llama serve
@@ -30,42 +33,17 @@ func main() {
 		},
 	}
 
+	// Define some models for the selection view
+	models := []model.Model{m}
+
 	// Initialize the runner with the Llama builder
 	runner := server.NewCommandRunner(LlamaCPPCommandBuilder)
 
-	// Start the process
-	// Using a context that we can cancel
-	// In a real app, this would be managed by the TUI lifecycle
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	// Initialize the UI app
+	app := ui.NewApp(models, runner)
 
-	fmt.Printf("Launching model: %s\n", m.Name)
-	logChan, err := runner.Start(ctx, m)
-	if err != nil {
-		fmt.Printf("Error starting: %v\n", err)
-		return
-	}
-
-	// Listen to logs in a separate goroutine
-	done := make(chan struct{})
-	go func() {
-		for msg := range logChan {
-			fmt.Printf("[LOG]: %s\n", msg)
-		}
-		close(done)
-	}()
-
-	// Wait for the context to expire (simulating a timeout or manual stop)
-	<-ctx.Done()
-	fmt.Println("Context expired or finished. Stopping process...")
-	runner.Stop()
-
-	// Wait for log channel to be closed
-	<-done
-
-	status := runner.Status()
-	fmt.Printf("Final Status: %s\n", status.Status)
-	if status.Error != nil {
-		fmt.Printf("Error: %v\n", status.Error)
+	// Start the Bubble Tea program
+	if _, err := tea.NewProgram(app).Run(); err != nil {
+		fmt.Printf("Error running application: %v\n", err)
 	}
 }
