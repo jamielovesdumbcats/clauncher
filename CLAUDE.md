@@ -66,6 +66,75 @@ Edit (or create) ~/.claude/settings.json and add:
 Launch claude with
 claude --model my-model (eg model defined and launched with llama earlier)
 
+## Launching opencode with local
+
+From [this page](https://dev.to/ferdousulhaque/opencode-for-agentic-development-with-local-llms-2h4k) it looks like we need the following
+
+check for .config/opencode/opencode.json and create if not present
+
+if creating put the following in
+
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "llama-cpp": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "llama-cpp (local)",
+      "options": {
+        "baseURL": "http://localhost:8081/v1"
+      },
+      "models": {
+        "qwen3:8b": {
+          "name": "qwen3:8b"
+        }
+      }
+    }
+  }
+}
+
+but we use the port we've setup, we should verify this is correct when starting opencode after the user has changed the port in config
+
+if the json already exists we need to insert the provider into the existing config.
+
+finally we check which directory to use, cd to it and launch with opencode
+
+crush seems to require a larger context than 4096 so we should warn if context set is smaller than that for the model and offer the user the chance to change it, providing them with the max context proved by the model
+
+## Launching crush with local
+
+From [this page](https://soc.meschbach.com/posts/2026/01/12-experiments-with-crush-and-ollama--qwen-3-coder/) it looks like we need the following
+
+check for ~/.config/crush/crush.json and create if not present
+
+if creating put the following in
+
+{
+  "$schema": "https://charm.land/crush.json",
+  "providers": {
+    "llama-cpp": {
+      "name": "llama-cpp",
+      "base_url": "http://localhost:8081/v1/",
+      "type": "openai",
+      "models": [
+        {
+        "name": "Qwen 3 8B",
+        "id": "qwen3:8b-ctx-40960",
+        "context_window": 40960
+        }
+      ]
+    }
+  },
+  "options": {
+    "disable_metrics": true
+  }
+}
+
+but we use the port we've setup, we should verify this is correct when starting crush after the user has changed the port in config
+
+if the json already exists we need to insert the provider into the existing config.
+
+finally we check which directory to use, cd to it and launch with crush
+
 ## New Features
 - [ ] Start claude with same model after launching llama
 = [ ] Ask which folder to start claude in (default would be current)
