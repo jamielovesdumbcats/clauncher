@@ -168,6 +168,9 @@ func (a *App) toggleProcess() tea.Cmd {
 				return messages.ErrorMsg{Err: err}
 			}
 		}
+		// Clear any error state that might have been set
+		a.runner.ClearError()
+		a.err = nil
 		return func() tea.Msg {
 			return messages.StatusUpdateMsg{Status: model.StatusStopped}
 		}

@@ -25,6 +25,7 @@ type ProcessRunner interface {
 	Start(ctx context.Context, m model.Model) (<-chan string, error)
 	Stop() error
 	Status() ProcessInfo
+	ClearError() // Clear any stored error state
 }
 
 // CommandRunner implements ProcessRunner for real OS processes.
@@ -37,6 +38,7 @@ type CommandRunner struct {
 	logChan        chan string
 	logChanClosed  bool
 	stopFunc       context.CancelFunc
+	procCtx        context.Context // Context for the running process
 	commandBuilder func(m model.Model) (string, []string)
 }
 
@@ -65,6 +67,7 @@ func (r *CommandRunner) Start(ctx context.Context, m model.Model) (<-chan string
 	// Create a cancellable context for this specific process run
 	runCtx, cancel := context.WithCancel(ctx)
 	r.stopFunc = cancel
+	r.procCtx = runCtx
 
 	name, args := r.commandBuilder(m)
 	r.cmd = exec.CommandContext(runCtx, name, args...)
@@ -158,9 +161,19 @@ func (r *CommandRunner) monitorExit() {
 			if exitError.ProcessState.Success() {
 				r.status = model.StatusStopped
 			} else {
-				r.status = model.StatusCrashed
-				r.err = err
+				// Check if the exit was due to context cancellation (intentional stop)
+				// vs an actual crash
+				if r.procCtx.Err() != nil {
+					// Context was cancelled - this is an intentional stop
+					r.status = model.StatusStopped
+				} else {
+					r.status = model.StatusCrashed
+					r.err = err
+				}
 			}
+		} else if err == context.Canceled || err == context.DeadlineExceeded {
+			// Context cancellation - intentional stop
+			r.status = model.StatusStopped
 		} else {
 			r.status = model.StatusCrashed
 			r.err = err
@@ -197,6 +210,13 @@ func (r *CommandRunner) cleanup(ctx context.Context) {
 	if r.stopFunc != nil {
 		r.stopFunc()
 	}
+}
+
+// ClearError clears any stored error state. Called when intentionally stopping a process.
+func (r *CommandRunner) ClearError() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.err = nil
 }
 
 // ListLocalModels runs "llama serve -cl" and parses the output to return a list of locally cached models.
