@@ -240,12 +240,14 @@ func ListLocalModels() ([]model.Model, error) {
 		// Create a display name from the model path (last component)
 		displayName := modelPath
 		if idx := strings.LastIndex(modelPath, "/"); idx != -1 {
-			// Keep org/repo format but remove -GGUF suffix for cleaner display
+			// Keep org/repo format, preserve size info (e.g., 9B, 35B)
 			namePart := modelPath[idx+1:]
-			if idx2 := strings.Index(namePart, "-"); idx2 != -1 {
+			// Remove -GGUF and quant suffix for cleaner display
+			// e.g., "Qwen3.6-27B-GGUF:IQ4_XS" -> "Qwen3.6-27B"
+			if idx2 := strings.Index(namePart, "-GGUF"); idx2 != -1 {
 				displayName = modelPath[:idx+1] + namePart[:idx2]
 			} else {
-				displayName = modelPath[idx+1:]
+				displayName = namePart
 			}
 		}
 
