@@ -65,7 +65,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.startProcess(m.Selected)
 
 	case messages.LogMsg:
-		// In a real app, we would update the dashboard log state here
+		// In a real app, we would update the dashboard state here
 		return a, nil
 
 	case messages.StatusUpdateMsg:
@@ -78,13 +78,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return a, nil
-}
-
-// selectModel handles the transition from selection to dashboard
-func (a *App) selectModel(idx int) tea.Cmd {
-	return func() tea.Msg {
-		return messages.ModelSelectedMsg{Selected: a.models[idx]}
-	}
 }
 
 // View renders the current application state.
@@ -109,7 +102,7 @@ func (a *App) renderSelectionView() string {
 	for i, m := range a.models {
 		s += fmt.Sprintf("%d. %s\n", i+1, m.Name)
 	}
-	s += "\n(Press q to quit)"
+	s += "\n(Press 1 to select, q to quit)"
 	return s
 }
 
@@ -118,6 +111,13 @@ func (a *App) renderDashboardView() string {
 	s := a.theme.Header.Render(fmt.Sprintf("Dashboard: %s", a.selectedModel.Name)) + "\n"
 	s += a.theme.Border.Render("Process is running...")
 	return s
+}
+
+// selectModel handles the transition from selection to dashboard
+func (a *App) selectModel(idx int) tea.Cmd {
+	return func() tea.Msg {
+		return messages.ModelSelectedMsg{Selected: a.models[idx]}
+	}
 }
 
 // startProcess is a helper to trigger process start via the runner.

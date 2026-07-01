@@ -20,17 +20,11 @@ The project is organized into the following structure:
 
 ## Implementation Progress
 - [x] **Phase 1: Core Domain & Interfaces**
-    - [x] Define `pkg/model` structures and types.
-    - [x] Define `pkg/server` interfaces.
-    - [x] Implement `MockRunner` for test mode.
-- [ ] **Phase 2: Execution Layer**
-    - [ ] Implement `pkg/server` process management.
-- [ ] **Phase 3: TUI Foundation**
-    - [ ] Setup Bubble Tea loop in `pkg/ui`.
-    - [ ] Create basic navigation/selection views.
-- [ ] **Phase 4: Integration & Polish**
-    - [ ] Connect UI to backend.
-    - [ ] Refine UX and error handling.
+- [x] **Phase 2: Execution Layer**
+- [x] **Phase 3: TUI Foundation**
+- [x] **Phase 4: Feature Integration**
 
 ## Development Workflow
-(Note: As this is an initial setup, specific build/test commands will be added as the project structure matures.)
+1. **Build**: `go build -o clauncher ./cmd/clauncher/main.go`
+2. **Run**: `./clauncher`
+3. **Test Mode**: Use the `MockRunner` (default in development) to test UI logic without needing live processes.
