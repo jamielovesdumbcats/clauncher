@@ -11,19 +11,9 @@ import (
 	"clauncher/pkg/model"
 )
 
-// ProcessStatus represents the current state of a running process.
-type ProcessStatus string
-
-const (
-	StatusRunning  ProcessStatus = "running"
-	StatusStopped  ProcessStatus = "stopped"
-	StatusCrashed  ProcessStatus = "crashed"
-	StatusStarting ProcessStatus = "starting"
-)
-
 // ProcessInfo holds metadata about a running or recently terminated process.
 type ProcessInfo struct {
-	Status  ProcessStatus
+	Status  model.ProcessStatus
 	Logs    []string
 	Error   error
 }
@@ -39,7 +29,7 @@ type ProcessRunner interface {
 type CommandRunner struct {
 	mu             sync.Mutex
 	cmd            *exec.Cmd
-	status         ProcessStatus
+	status         model.ProcessStatus
 	logs           []string
 	err            error
 	logChan        chan string
@@ -51,7 +41,7 @@ type CommandRunner struct {
 // The commandBuilder allows different implementations for Claude and Llama.
 func NewCommandRunner(builder func(m model.Model) (string, []string)) *CommandRunner {
 	return &CommandRunner{
-		status:         StatusStopped,
+		status:         model.StatusStopped,
 		commandBuilder: builder,
 		logChan:        make(chan string, 100),
 	}
@@ -62,11 +52,11 @@ func (r *CommandRunner) Start(ctx context.Context, m model.Model) (<-chan string
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.status == StatusRunning {
+	if r.status == model.StatusRunning {
 		return nil, fmt.Errorf("process is already running")
 	}
 
-	r.status = StatusStarting
+	r.status = model.StatusStarting
 
 	// Create a cancellable context for this specific process run
 	runCtx, cancel := context.WithCancel(ctx)
@@ -93,7 +83,7 @@ func (r *CommandRunner) Start(ctx context.Context, m model.Model) (<-chan string
 		return nil, fmt.Errorf("failed to start command: %w", err)
 	}
 
-	r.status = StatusRunning
+	r.status = model.StatusRunning
 
 	// Start log monitoring
 	go r.monitorPipes(stdout, stderr)
@@ -107,7 +97,7 @@ func (r *CommandRunner) Stop() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.status != StatusRunning && r.status != StatusStarting {
+	if r.status != model.StatusRunning && r.status != model.StatusStarting {
 		return fmt.Errorf("process is not running")
 	}
 
@@ -158,17 +148,17 @@ func (r *CommandRunner) monitorExit() {
 		if exitError, ok := err.(*exec.ExitError); ok {
 			// Check if it was a signal-based exit (likely intentional stop)
 			if exitError.ProcessState.Success() {
-				r.status = StatusStopped
+				r.status = model.StatusStopped
 			} else {
-				r.status = StatusCrashed
+				r.status = model.StatusCrashed
 				r.err = err
 			}
 		} else {
-			r.status = StatusCrashed
+			r.status = model.StatusCrashed
 			r.err = err
 		}
 	} else {
-		r.status = StatusStopped
+		r.status = model.StatusStopped
 	}
 
 	// Ensure the log channel is closed so receivers stop waiting
@@ -189,7 +179,7 @@ func (r *CommandRunner) addLog(msg string) {
 }
 
 func (r *CommandRunner) cleanup(ctx context.Context) {
-	r.status = StatusStopped
+	r.status = model.StatusStopped
 	if r.stopFunc != nil {
 		r.stopFunc()
 	}

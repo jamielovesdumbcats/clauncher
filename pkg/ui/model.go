@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 
 	"clauncher/pkg/model"
@@ -30,15 +31,25 @@ type App struct {
 
 	// Internal state for transitions
 	err error
+
+	// Log state for dashboard
+	logs     []string
+	logChan  <-chan string
+	ctx      context.Context
+	cancelFn context.CancelFunc
 }
 
 // NewApp initializes a new application instance.
 func NewApp(models []model.Model, runner server.ProcessRunner) *App {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &App{
 		currentView: ViewSelection,
 		theme:       theme.NewTheme(),
 		models:      models,
 		runner:      runner,
+		logs:        []string{},
+		ctx:         ctx,
+		cancelFn:    cancel,
 	}
 }
 
@@ -58,6 +69,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(a.models) > 0 {
 				return a, a.selectModel(0)
 			}
+		case "s":
+			if a.currentView == ViewDashboard {
+				return a, a.toggleProcess()
+			}
 		}
 	case messages.ModelSelectedMsg:
 		a.selectedModel = &m.Selected
@@ -65,11 +80,17 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.startProcess(m.Selected)
 
 	case messages.LogMsg:
-		// In a real app, we would update the dashboard state here
+		a.logs = append(a.logs, m.Line)
+		// Keep log buffer reasonable
+		if len(a.logs) > 100 {
+			a.logs = a.logs[1:]
+		}
 		return a, nil
 
 	case messages.StatusUpdateMsg:
-		// Update dashboard status
+		if m.Error != nil {
+			a.err = m.Error
+		}
 		return a, nil
 
 	case messages.ErrorMsg:
@@ -78,6 +99,26 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return a, nil
+}
+
+// toggleProcess handles the start/stop logic in the dashboard
+func (a *App) toggleProcess() tea.Cmd {
+	if a.selectedModel == nil {
+		return nil
+	}
+
+	status := a.runner.Status()
+	if status.Status == model.StatusRunning {
+		return func() tea.Msg {
+			err := a.runner.Stop()
+			if err != nil {
+				return messages.ErrorMsg{Err: err}
+			}
+			return messages.StatusUpdateMsg{Status: model.StatusStopped}
+		}
+	} else {
+		return a.startProcess(*a.selectedModel)
+	}
 }
 
 // View renders the current application state.
@@ -108,9 +149,30 @@ func (a *App) renderSelectionView() string {
 
 // renderDashboardView renders the main dashboard UI.
 func (a *App) renderDashboardView() string {
-	s := a.theme.Header.Render(fmt.Sprintf("Dashboard: %s", a.selectedModel.Name)) + "\n"
-	s += a.theme.Border.Render("Process is running...")
-	return s
+	header := a.theme.Header.Render(fmt.Sprintf("Dashboard: %s", a.selectedModel.Name))
+
+	// Construct log area
+	logContent := ""
+	if len(a.logs) == 0 {
+		logContent = "Waiting for logs..."
+	} else {
+		for _, line := range a.logs {
+			logContent += line + "\n"
+		}
+	}
+
+	// Use a scrollable-like view for logs
+	logBox := a.theme.Border.Render(logContent)
+
+	status := a.runner.Status().Status
+	controlHint := "[s] toggle start/stop"
+	if status == model.StatusRunning {
+		controlHint = "[s] stop"
+	}
+
+	footer := fmt.Sprintf("\nStatus: %s | %s", status, controlHint)
+
+	return fmt.Sprintf("%s\n\n%s\n\n%s", header, logBox, a.theme.Footer.Render(footer))
 }
 
 // selectModel handles the transition from selection to dashboard
@@ -120,11 +182,35 @@ func (a *App) selectModel(idx int) tea.Cmd {
 	}
 }
 
-// startProcess is a helper to trigger process start via the runner.
+// startProcess starts the process and returns a command that reads logs.
 func (a *App) startProcess(m model.Model) tea.Cmd {
 	return func() tea.Msg {
-		// This is a placeholder for real async execution
-		// In Phase 4, we will integrate the real runner here
-		return messages.ModelSelectedMsg{Selected: m}
+		// Start the process
+		logChan, err := a.runner.Start(a.ctx, m)
+		if err != nil {
+			return messages.ErrorMsg{Err: fmt.Errorf("failed to start process: %w", err)}
+		}
+
+		// Store the log channel
+		a.logChan = logChan
+
+		// Start reading logs in a goroutine
+		go func() {
+			for line := range logChan {
+				// Send log message to UI via a command
+				// We use a timer-based approach to batch messages
+				a.logs = append(a.logs, line)
+				if len(a.logs) > 100 {
+					a.logs = a.logs[1:]
+				}
+			}
+			// Channel closed - process exited
+			status := a.runner.Status()
+			if status.Error != nil {
+				// Process crashed
+			}
+		}()
+
+		return messages.StatusUpdateMsg{Status: model.StatusRunning}
 	}
 }

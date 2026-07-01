@@ -22,9 +22,17 @@ The project is organized into the following structure:
 - [x] **Phase 1: Core Domain & Interfaces**
 - [x] **Phase 2: Execution Layer**
 - [x] **Phase 3: TUI Foundation**
-- [x] **Phase 4: Feature Integration**
+- [ ] **Phase 4: Feature Integration**
+    - [ ] Integrate `CommandRunner` with the UI.
+    - [ ] Implement real-time log streaming in the dashboard.
+    - [ ] Implement process control (Start/Stop) from the TUI.
+    - [ ] Add error handling/crash detection UI.
+
+## Known Issues & Debugging
+- **Build Error**: Type mismatch in `pkg/ui/model.go`. Ensure `StatusUpdateMsg` uses `model.ProcessStatus` (from `pkg/model`) instead of `server.ProcessStatus`.
+- **Environment**: If running in a restricted shell, the TUI may fail with `could not open a new TTY`. Use the `MockRunner` for UI development.
 
 ## Development Workflow
 1. **Build**: `go build -o clauncher ./cmd/clauncher/main.go`
 2. **Run**: `./clauncher`
-3. **Test Mode**: Use the `MockRunner` (default in development) to test UI logic without needing live processes.
+3. **Test Mode**: Use the `MockRunner` for testing UI logic.
