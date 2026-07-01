@@ -4,7 +4,8 @@ A powerful Terminal User Interface (TUI) designed to manage and launch your loca
 
 ## ✨ Features
 
-- **Model Management**: Effortlessly select and launch different local models.
+- **Dynamic Model Discovery**: Automatically detects all locally installed LLM models via `llama serve -cl`.
+- **Real-time Model Refresh**: Press `r` to refresh the model list and pick up newly downloaded models.
 - **Seamless TUI**: Built with the high-performance [Charmbracelet](https://charmbracelet.com/) ecosystem for a beautiful terminal experience.
 - **Real-time Logs**: Monitor your model's output and server status directly within the interface.
 - **Process Control**: Start, stop, and manage the lifecycle of your running models.
@@ -36,26 +37,29 @@ A powerful Terminal User Interface (TUI) designed to manage and launch your loca
 
 ### Running the Application
 
+#### 🚀 Standard Mode (Auto-detects local models)
+The application automatically scans for locally installed LLM models using `llama serve -cl` at startup.
+
+```bash
+./clauncher
+```
+
+The model list will be populated with all your locally cached models. Press `r` to refresh the list if you've downloaded new models.
+
 #### 🧪 Development / Test Mode (Recommended for testing UI)
-To test the TUI logic without needing actual `llama` or `claude` processes running, use the built-in **Mock Mode**. This simulates process lifecycles and logs.
-
-```bash
-./clauncher
-```
-*Note: The current build defaults to `MockRunner` for safe development.*
-
-#### 🛠 Production/Real Mode
-To run with actual processes, ensure your command builder in `cmd/clauncher/main.go` points to your installed binaries.
-
-```bash
-./clauncher
-```
+To test the TUI logic without needing actual `llama` or `claude` processes running, modify `cmd/clauncher/main.go` to use the built-in **Mock Mode**. This simulates process lifecycles and logs.
 
 ## ⌨️ Controls
 
-- `1`: Select the first model in the list.
-- `q`: Quit the application.
-- `s`: (Dashboard) Toggle Start/Stop for the selected model.
+### Model Selection View
+- `1`-`9`: Select model by number (first 9 models)
+- `r`: Refresh the local model list
+- `q`: Quit the application
+
+### Dashboard View
+- `s`: Toggle Start/Stop for the selected model
+- `b` or `Esc`: Go back to model selection
+- `q`: Quit the application
 
 ## 🏗 Architecture
 

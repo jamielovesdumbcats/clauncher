@@ -27,9 +27,44 @@ The project is organized into the following structure:
     - [x] Implement real-time log streaming in the dashboard.
     - [x] Implement process control (Start/Stop) from the TUI.
     - [x] Add error handling/crash detection UI.
+- [x] **Phase 5: Dynamic Model Discovery**
+    - [x] Auto-discover locally installed models via `llama serve -cl`
+    - [x] Real-time model list refresh from TUI
+    - [x] Fixed "signal: killed" error on intentional stop
 
 ## Known Issues & Debugging
 - **Environment**: If running in a restricted shell, the TUI may fail with `could not open a new TTY`. Use the `MockRunner` for UI development.
+
+## Launching claude with local
+
+From [this page](https://jonathansblog.co.uk/using-claude-code-with-local-llm-models-the-complete-guide) the steps for local claude usage should be as follows
+
+Start the llama server
+
+llama-server 
+  --model "$MODEL_PATH" 
+  --alias "my-model" 
+  --temp 1.0 
+  --top-p 0.95 
+  --port 8001 
+  --ctx-size 131072 
+  --flash-attn on
+
+Point Claude Code at it
+export ANTHROPIC_BASE_URL=https://localhost:8081 
+or a preferred port number, llama default is 8080 but we are using 8081 while testing as 8080 is already taken
+
+Fix the KV Cache Performance Issue
+
+Edit (or create) ~/.claude/settings.json and add:
+{
+  "env": {
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
+  }
+}
+
+Launch claude with
+claude --model my-model (eg model defined and launched with llama earlier)
 
 ## New Features
 - [ ] Start claude with same model after launching llama
@@ -39,7 +74,7 @@ The project is organized into the following structure:
 - [ ] Option to specify port number
 - [ ] Option to specify context length for llama and claude
 - [ ] support starting and setup with local running for opencode and crush
-- [ ] Command to run 'llama serve -cl' and populate models list from output
+- [x] Command to run 'llama serve -cl' and populate models list from output
 - [ ] Run llama benchmark for models, noting the current gpu and logging results in a table
 - [ ] Display gpu usage in clauncher UI
 - [ ] Check hugging face for new llama models, list them in tui and offer to pull them
