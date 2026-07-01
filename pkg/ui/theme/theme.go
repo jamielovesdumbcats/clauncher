@@ -21,7 +21,7 @@ type Theme struct {
 func NewTheme() *Theme {
 	return &Theme{
 		Primary:    lipgloss.NewStyle().Foreground(lipgloss.Color("12")), // Blue
-		Secondary:  lipgloss.NewStyle().Foreground(lipgloss.Color("6"), true), // Cyan
+		Secondary:  lipgloss.NewStyle().Foreground(lipgloss.Color("6")), // Cyan
 		Success:    lipgloss.NewStyle().Foreground(lipgloss.Color("10")), // Green
 		Error:      lipgloss.NewStyle().Foreground(lipgloss.Color("9")), // Red
 		Warning:    lipgloss.NewStyle().Foreground(lipgloss.Color("11")), // Yellow

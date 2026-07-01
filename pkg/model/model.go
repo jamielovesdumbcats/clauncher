@@ -11,6 +11,15 @@ const (
 	LlamaCPP   ModelType = "llama-cpp"
 )
 
+type ProcessStatus string
+
+const (
+	StatusRunning  ProcessStatus = "running"
+	StatusStopped  ProcessStatus = "stopped"
+	StatusCrashed  ProcessStatus = "crashed"
+	StatusStarting ProcessStatus = "starting"
+)
+
 type UsageMetrics struct {
 	TokensUsed int64
 	LastUsed   time.Time
