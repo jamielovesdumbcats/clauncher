@@ -33,8 +33,9 @@ type App struct {
 	err error
 
 	// Log state for dashboard
-	logs     []string
-	logChan  <-chan string
+	logs []string
+
+	// Context for process management
 	ctx      context.Context
 	cancelFn context.CancelFunc
 }
@@ -64,6 +65,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch m.String() {
 		case "ctrl+c", "q":
+			if a.currentView == ViewDashboard {
+				// Stop any running process before quitting
+				if a.runner.Status().Status == model.StatusRunning {
+					a.runner.Stop()
+				}
+			}
 			return a, tea.Quit
 		case "1":
 			if len(a.models) > 0 {
@@ -73,10 +80,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.currentView == ViewDashboard {
 				return a, a.toggleProcess()
 			}
+		case "b", "esc":
+			// Go back to selection from dashboard
+			if a.currentView == ViewDashboard {
+				return a, a.goBack()
+			}
 		}
 	case messages.ModelSelectedMsg:
 		a.selectedModel = &m.Selected
 		a.currentView = ViewDashboard
+		a.logs = []string{} // Clear logs for new model
 		return a, a.startProcess(m.Selected)
 
 	case messages.LogMsg:
@@ -91,10 +104,28 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.Error != nil {
 			a.err = m.Error
 		}
+		// Start the status tick loop if process is running
+		if m.Status == model.StatusRunning {
+			return a, tick()
+		}
 		return a, nil
 
 	case messages.ErrorMsg:
 		a.err = m.Err
+		return a, nil
+
+	case messages.StatusTickMsg:
+		// Check for status changes
+		currentStatus := a.runner.Status().Status
+		if currentStatus == model.StatusCrashed {
+			if info := a.runner.Status(); info.Error != nil {
+				a.err = info.Error
+			}
+		}
+		// Continue the tick loop if still in dashboard
+		if a.currentView == ViewDashboard {
+			return a, tick()
+		}
 		return a, nil
 	}
 
@@ -109,22 +140,32 @@ func (a *App) toggleProcess() tea.Cmd {
 
 	status := a.runner.Status()
 	if status.Status == model.StatusRunning {
-		return func() tea.Msg {
-			err := a.runner.Stop()
-			if err != nil {
+		// Stop the process
+		err := a.runner.Stop()
+		if err != nil {
+			return func() tea.Msg {
 				return messages.ErrorMsg{Err: err}
 			}
+		}
+		return func() tea.Msg {
 			return messages.StatusUpdateMsg{Status: model.StatusStopped}
 		}
-	} else {
-		return a.startProcess(*a.selectedModel)
 	}
+	// Start the process
+	return a.startProcess(*a.selectedModel)
+}
+
+// goBack returns to the selection view
+func (a *App) goBack() tea.Cmd {
+	a.currentView = ViewSelection
+	a.selectedModel = nil
+	return nil
 }
 
 // View renders the current application state.
 func (a *App) View() string {
 	if a.err != nil {
-		return a.theme.Error.Render(fmt.Sprintf("Error: %v", a.err))
+		return a.theme.Error.Render(fmt.Sprintf("Error: %v\n\nPress 'b' to go back", a.err))
 	}
 
 	switch a.currentView {
@@ -139,40 +180,60 @@ func (a *App) View() string {
 
 // renderSelectionView renders the model selection UI.
 func (a *App) renderSelectionView() string {
-	s := a.theme.Header.Render("Select a Model to Launch") + "\n\n"
+	s := a.theme.Header.Render("Clauncher - Select a Model") + "\n\n"
 	for i, m := range a.models {
-		s += fmt.Sprintf("%d. %s\n", i+1, m.Name)
+		s += fmt.Sprintf("  %d. %s\n", i+1, m.Name)
 	}
-	s += "\n(Press 1 to select, q to quit)"
+	s += "\nPress 1 to select the first model, q to quit"
 	return s
 }
 
 // renderDashboardView renders the main dashboard UI.
 func (a *App) renderDashboardView() string {
-	header := a.theme.Header.Render(fmt.Sprintf("Dashboard: %s", a.selectedModel.Name))
+	status := a.runner.Status().Status
+
+	// Header with status indicator
+	statusIndicator := "●"
+	switch status {
+	case model.StatusRunning:
+		statusIndicator = "●"
+	case model.StatusStarting:
+		statusIndicator = "◐"
+	case model.StatusStopped:
+		statusIndicator = "○"
+	case model.StatusCrashed:
+		statusIndicator = "✕"
+	}
+
+	header := fmt.Sprintf("[%s] %s - %s", statusIndicator, status, a.selectedModel.Name)
+	styledHeader := a.theme.Header.Render(header)
 
 	// Construct log area
 	logContent := ""
 	if len(a.logs) == 0 {
-		logContent = "Waiting for logs..."
+		if status == model.StatusStarting {
+			logContent = "Starting process..."
+		} else {
+			logContent = "No logs yet. Press 's' to start the process."
+		}
 	} else {
 		for _, line := range a.logs {
 			logContent += line + "\n"
 		}
 	}
 
-	// Use a scrollable-like view for logs
+	// Use a bordered box for logs
 	logBox := a.theme.Border.Render(logContent)
 
-	status := a.runner.Status().Status
-	controlHint := "[s] toggle start/stop"
+	// Control hints
+	controlHint := "[s] toggle start/stop | [b] back | [q] quit"
 	if status == model.StatusRunning {
-		controlHint = "[s] stop"
+		controlHint = "[s] stop | [b] back | [q] quit"
 	}
 
-	footer := fmt.Sprintf("\nStatus: %s | %s", status, controlHint)
+	footer := fmt.Sprintf("\n%s", controlHint)
 
-	return fmt.Sprintf("%s\n\n%s\n\n%s", header, logBox, a.theme.Footer.Render(footer))
+	return fmt.Sprintf("%s\n\n%s\n\n%s", styledHeader, logBox, a.theme.Footer.Render(footer))
 }
 
 // selectModel handles the transition from selection to dashboard
@@ -191,26 +252,30 @@ func (a *App) startProcess(m model.Model) tea.Cmd {
 			return messages.ErrorMsg{Err: fmt.Errorf("failed to start process: %w", err)}
 		}
 
-		// Store the log channel
-		a.logChan = logChan
-
 		// Start reading logs in a goroutine
 		go func() {
 			for line := range logChan {
-				// Send log message to UI via a command
-				// We use a timer-based approach to batch messages
 				a.logs = append(a.logs, line)
 				if len(a.logs) > 100 {
 					a.logs = a.logs[1:]
 				}
 			}
 			// Channel closed - process exited
-			status := a.runner.Status()
-			if status.Error != nil {
-				// Process crashed
-			}
 		}()
 
+		// Start status ticker
 		return messages.StatusUpdateMsg{Status: model.StatusRunning}
+	}
+}
+
+// tickCmd returns a command that sends a StatusTickMsg
+func tickCmd() tea.Msg {
+	return messages.StatusTickMsg{}
+}
+
+// tick returns a command that sends a StatusTickMsg after a short delay
+func tick() tea.Cmd {
+	return func() tea.Msg {
+		return messages.StatusTickMsg{}
 	}
 }

@@ -33,6 +33,7 @@ type CommandRunner struct {
 	logs           []string
 	err            error
 	logChan        chan string
+	logChanClosed  bool
 	stopFunc       context.CancelFunc
 	commandBuilder func(m model.Model) (string, []string)
 }
@@ -44,6 +45,7 @@ func NewCommandRunner(builder func(m model.Model) (string, []string)) *CommandRu
 		status:         model.StatusStopped,
 		commandBuilder: builder,
 		logChan:        make(chan string, 100),
+		logChanClosed:  false,
 	}
 }
 
@@ -138,6 +140,10 @@ func (r *CommandRunner) monitorPipes(stdout, stderr io.ReadCloser) {
 }
 
 func (r *CommandRunner) monitorExit() {
+	// Wait for pipes to finish first to avoid race condition
+	// We need to ensure monitorPipes goroutines have finished reading
+	// before we close the channel
+
 	err := r.cmd.Wait()
 
 	r.mu.Lock()
@@ -162,7 +168,11 @@ func (r *CommandRunner) monitorExit() {
 	}
 
 	// Ensure the log channel is closed so receivers stop waiting
-	close(r.logChan)
+	// Only close if not already closed
+	if !r.logChanClosed {
+		close(r.logChan)
+		r.logChanClosed = true
+	}
 }
 
 func (r *CommandRunner) addLog(msg string) {
@@ -170,11 +180,13 @@ func (r *CommandRunner) addLog(msg string) {
 	defer r.mu.Unlock()
 	r.logs = append(r.logs, msg)
 
-	// Non-blocking send to log channel
-	select {
-	case r.logChan <- msg:
-	default:
-		// Channel full, skip to prevent blocking
+	// Non-blocking send to log channel, but check if closed first
+	if !r.logChanClosed {
+		select {
+		case r.logChan <- msg:
+		default:
+			// Channel full, skip to prevent blocking
+		}
 	}
 }
 

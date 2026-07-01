@@ -1,7 +1,10 @@
 package messages
 
 import (
+	"time"
+
 	"clauncher/pkg/model"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // ModelSelectedMsg is sent when a model is chosen from the selection view.
@@ -20,7 +23,18 @@ type StatusUpdateMsg struct {
 	Error  error
 }
 
+// StatusTickMsg is sent periodically to update the status display.
+type StatusTickMsg struct{}
+
 // ErrorMsg is sent for fatal errors in the application.
 type ErrorMsg struct {
 	Err error
+}
+
+// StatusTickCmd creates a command that returns a StatusTickMsg after a short delay.
+func StatusTickCmd() tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(100 * time.Millisecond)
+		return StatusTickMsg{}
+	}
 }
