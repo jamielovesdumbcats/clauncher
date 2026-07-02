@@ -44,3 +44,9 @@ type ModelsRefreshedMsg struct {
 	Models []model.Model
 	Error  error
 }
+
+// LaunchOptionSelectedMsg is sent when user selects a launch option
+type LaunchOptionSelectedMsg struct {
+	Option model.LaunchOption
+	Model  model.Model
+}

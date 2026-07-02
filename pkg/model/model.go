@@ -11,6 +11,16 @@ const (
 	LlamaCPP   ModelType = "llama-cpp"
 )
 
+type LaunchOption int
+
+const (
+	LaunchLlamaServer LaunchOption = iota // Launch server, show browser link
+	LaunchLlamaCLI                        // Launch CLI in new terminal
+	LaunchClaudeCode                      // Launch Claude Code with local model
+	LaunchOpencode                        // Launch Opencode with local model
+	LaunchCrush                           // Launch Crush with local model
+)
+
 type ProcessStatus string
 
 const (

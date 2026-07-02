@@ -2,7 +2,13 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"time"
 
 	"clauncher/pkg/model"
 	"clauncher/pkg/server"
@@ -17,6 +23,7 @@ type ViewState int
 const (
 	ViewSelection ViewState = iota
 	ViewDashboard
+	ViewLaunchOptions
 )
 
 // App is the root model for the application.
@@ -37,6 +44,9 @@ type App struct {
 
 	// Model refresh state
 	refreshing bool
+
+	// Pending model selected, waiting for launch option
+	pendingModel *model.Model
 
 	// Context for process management
 	ctx      context.Context
@@ -90,20 +100,33 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, a.refreshModels()
 			}
 		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-			// Select model by number
+			// Select model by number (in selection view)
 			if a.currentView == ViewSelection {
 				idx := int(m.String()[0] - '1') // Convert '1'-'9' to 0-8
 				if idx >= 0 && idx < len(a.models) {
 					return a, a.selectModel(idx)
 				}
 			}
+			// Select launch option (in launch options view)
+			if a.currentView == ViewLaunchOptions {
+				option := model.LaunchLlamaServer
+				if m.String() == "2" {
+					option = model.LaunchLlamaCLI
+				} else if m.String() == "3" {
+					option = model.LaunchClaudeCode
+				} else if m.String() == "4" {
+					option = model.LaunchOpencode
+				} else if m.String() == "5" {
+					option = model.LaunchCrush
+				}
+				return a, func() tea.Msg {
+					return messages.LaunchOptionSelectedMsg{
+						Option: option,
+						Model:  *a.pendingModel,
+					}
+				}
+			}
 		}
-	case messages.ModelSelectedMsg:
-		a.selectedModel = &m.Selected
-		a.currentView = ViewDashboard
-		a.logs = []string{} // Clear logs for new model
-		return a, a.startProcess(m.Selected)
-
 	case messages.LogMsg:
 		a.logs = append(a.logs, m.Line)
 		// Keep log buffer reasonable
@@ -148,6 +171,29 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.models = m.Models
 		return a, nil
+
+	case messages.LaunchOptionSelectedMsg:
+		switch m.Option {
+		case model.LaunchLlamaServer:
+			// Use existing dashboard flow
+			a.selectedModel = &m.Model
+			a.currentView = ViewDashboard
+			a.logs = []string{}
+			return a, a.startProcess(m.Model)
+		case model.LaunchLlamaCLI:
+			// Launch CLI in new terminal
+			return a, a.launchLlamaCLI(m.Model)
+		case model.LaunchClaudeCode:
+			// Launch Claude Code with local model
+			return a, a.launchClaudeCode(m.Model)
+		case model.LaunchOpencode:
+			// Launch Opencode with local model
+			return a, a.launchOpencode(m.Model)
+		case model.LaunchCrush:
+			// Launch Crush with local model
+			return a, a.launchCrush(m.Model)
+		}
+		return a, nil
 	}
 
 	return a, nil
@@ -181,8 +227,13 @@ func (a *App) toggleProcess() tea.Cmd {
 
 // goBack returns to the selection view
 func (a *App) goBack() tea.Cmd {
-	a.currentView = ViewSelection
-	a.selectedModel = nil
+	if a.currentView == ViewLaunchOptions {
+		a.currentView = ViewSelection
+		a.pendingModel = nil
+	} else if a.currentView == ViewDashboard {
+		a.currentView = ViewSelection
+		a.selectedModel = nil
+	}
 	a.err = nil // Clear any error state when returning to selection
 	return nil
 }
@@ -206,6 +257,8 @@ func (a *App) View() string {
 	switch a.currentView {
 	case ViewSelection:
 		return a.renderSelectionView()
+	case ViewLaunchOptions:
+		return a.renderLaunchOptionsView()
 	case ViewDashboard:
 		return a.renderDashboardView()
 	default:
@@ -243,6 +296,19 @@ func (a *App) renderSelectionView() string {
 	}
 	s += ", r to refresh list, q to quit"
 
+	return s
+}
+
+// renderLaunchOptionsView renders the launch options UI.
+func (a *App) renderLaunchOptionsView() string {
+	s := a.theme.Header.Render("Launch Options") + "\n\n"
+	s += a.theme.Primary.Render(fmt.Sprintf("Model: %s\n\n", a.pendingModel.Name))
+	s += "  1. " + a.theme.Success.Render("Launch Llama Server") + " (open in browser)\n"
+	s += "  2. " + a.theme.Secondary.Render("Launch Llama CLI") + " (new terminal)\n"
+	s += "  3. " + a.theme.Info.Render("Launch Claude Code") + " (with local model)\n"
+	s += "  4. " + a.theme.Info.Render("Launch Opencode") + " (with local model)\n"
+	s += "  5. " + a.theme.Info.Render("Launch Crush") + " (with local model)\n"
+	s += "\nPress 1-5 to select, b to go back"
 	return s
 }
 
@@ -294,11 +360,11 @@ func (a *App) renderDashboardView() string {
 	return fmt.Sprintf("%s\n\n%s\n\n%s", styledHeader, logBox, a.theme.Footer.Render(footer))
 }
 
-// selectModel handles the transition from selection to dashboard
+// selectModel handles the transition from selection to launch options
 func (a *App) selectModel(idx int) tea.Cmd {
-	return func() tea.Msg {
-		return messages.ModelSelectedMsg{Selected: a.models[idx]}
-	}
+	a.pendingModel = &a.models[idx]
+	a.currentView = ViewLaunchOptions
+	return nil
 }
 
 // startProcess starts the process and returns a command that reads logs.
@@ -335,5 +401,81 @@ func tickCmd() tea.Msg {
 func tick() tea.Cmd {
 	return func() tea.Msg {
 		return messages.StatusTickMsg{}
+	}
+}
+
+// launchLlamaCLI launches the llama CLI in a new terminal window
+func (a *App) launchLlamaCLI(m model.Model) tea.Cmd {
+	return func() tea.Msg {
+		var cmd *exec.Cmd
+		var err error
+
+		switch runtime.GOOS {
+		case "linux":
+			// Try common terminal emulators on Linux
+			terminals := []string{"gnome-terminal", "konsole", "xterm", "terminator"}
+			for _, term := range terminals {
+				if _, err := exec.LookPath(term); err == nil {
+					cmd = exec.Command(term, "-e", "sh", "-c", fmt.Sprintf(
+						"llama --model %s && %s -e read", m.Config["model_name"], term))
+					err = cmd.Start()
+					if err == nil {
+						cmd.Process.Release()
+						return messages.StatusUpdateMsg{Status: model.StatusStopped}
+					}
+				}
+			}
+			// Fallback to basic shell execution
+			cmd = exec.Command("sh", "-c", fmt.Sprintf("llama --model %s", m.Config["model_name"]))
+		case "darwin":
+			// macOS - use osascript to open Terminal
+			cmd = exec.Command("osascript", "-e",
+				fmt.Sprintf(`tell application "Terminal" to do script "llama --model %s"`, m.Config["model_name"]))
+		default:
+			return messages.ErrorMsg{Err: fmt.Errorf("unsupported OS: %s", runtime.GOOS)}
+		}
+
+		if err != nil {
+			return messages.ErrorMsg{Err: fmt.Errorf("failed to launch CLI: %w", err)}
+		}
+
+		cmd.Process.Release()
+		return messages.StatusUpdateMsg{Status: model.StatusStopped}
+	}
+}
+
+// launchClaudeCode launches Claude Code connected to a local llama server
+func (a *App) launchClaudeCode(m model.Model) tea.Cmd {
+	return func() tea.Msg {
+		port := "8081" // Default port
+
+		// 1. Start llama server with specific flags for Claude compatibility
+		serverCmd := exec.Command("llama", "serve",
+			"-hf", m.Config["model_name"],
+			"--port", port,
+			"--ctx-size", "131072", // Large context
+			"--flash-attn", "on",   // Performance
+		)
+
+		if err := serverCmd.Start(); err != nil {
+			return messages.ErrorMsg{Err: fmt.Errorf("failed to start llama server: %w", err)}
+		}
+
+		// 2. Wait for server to be ready
+		time.Sleep(2 * time.Second)
+
+		// 3. Set environment variable and launch Claude
+		envCmd := exec.Command("sh", "-c",
+			fmt.Sprintf(`export ANTHROPIC_BASE_URL=https://localhost:%s && claude --model my-model`, port))
+
+		if err := envCmd.Start(); err != nil {
+			serverCmd.Process.Kill()
+			return messages.ErrorMsg{Err: fmt.Errorf("failed to launch claude: %w", err)}
+		}
+
+		envCmd.Process.Release()
+
+		// Return to selection view - processes run independently
+		return messages.StatusUpdateMsg{Status: model.StatusStopped}
 	}
 }
