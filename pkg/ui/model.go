@@ -147,6 +147,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.benchmarkModelName = a.pendingModel.Name
 				return a, a.runBenchmark(*a.pendingModel)
 			}
+		case "c":
+			// Clear benchmark results
+			if a.currentView == ViewBenchmark {
+				if err := a.benchmarkStore.Clear(); err != nil {
+					a.err = fmt.Errorf("failed to clear benchmarks: %w", err)
+				} else {
+					a.benchmarkResults = nil
+				}
+				return a, nil
+			}
 		case "r":
 			// Refresh local models list
 			if a.currentView == ViewSelection && !a.refreshing {
@@ -875,7 +885,7 @@ func (a *App) renderBenchmarkView() string {
 	if len(a.benchmarkResults) == 0 {
 		s += "No benchmarks run yet.\n\n"
 		s += "Select a model then press 'm' to run a benchmark.\n"
-		s += "\nPress 'b' to go back"
+		s += "\nb: go back | c: clear"
 		return s
 	}
 
@@ -893,7 +903,7 @@ func (a *App) renderBenchmarkView() string {
 			r.SGTTokensPerSecond, r.Timestamp[:10])
 	}
 
-	s += "\nPress 'b' to go back"
+	s += "\nb: go back | c: clear"
 	return s
 }
 

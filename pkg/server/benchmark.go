@@ -36,67 +36,43 @@ func parseBenchmarkOutput(output string, m model.Model) *model.BenchmarkResult {
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
 
-	// Extract tokens per second values using regex
-	// Pattern: "xxx t/s" or similar
-	tpsPattern := regexp.MustCompile(`([\d.]+)\s*t/s`)
-	totalTimePattern := regexp.MustCompile(`([\d.]+)\s*ms`)
-
+	// Parse markdown table rows: | model | size | params | backend | ngl | test | t/s |
+	// Example: | gemma4 26B ... | 13.08 GiB | 25.23 B | Vulkan | -1 | pp512 | 79.27 ± 5.05 |
+	tsPattern := regexp.MustCompile(`\|\s*([\d.]+)\s*(?:±\s*[\d.]+)?\s*\|$`)
 	lines := strings.Split(output, "\n")
-	for i, line := range lines {
+	for _, line := range lines {
 		line = strings.TrimSpace(line)
-
-		// Multi-query sampling throughput
-		if strings.Contains(strings.ToLower(line), "multi-query") && strings.Contains(strings.ToLower(line), "sampling") {
-			matches := tpsPattern.FindStringSubmatch(line)
-			if len(matches) > 1 {
-				val, _ := strconv.ParseFloat(matches[1], 64)
-				result.MQTTokensPerSecond = val
-			}
-			// Check next lines for total time
-			if i+1 < len(lines) {
-				nextLine := strings.TrimSpace(lines[i+1])
-				matches = totalTimePattern.FindStringSubmatch(nextLine)
-				if len(matches) > 1 {
-					val, _ := strconv.ParseFloat(matches[1], 64)
-					result.MQSTotalTimeMs = val
-				}
-			}
+		if !strings.HasPrefix(line, "|") {
+			continue
 		}
 
-		// Prompt processing speed
-		if strings.Contains(strings.ToLower(line), "prompt") && strings.Contains(strings.ToLower(line), "processing") {
-			matches := tpsPattern.FindStringSubmatch(line)
-			if len(matches) > 1 {
-				val, _ := strconv.ParseFloat(matches[1], 64)
-				result.PPTokensPerSecond = val
-			}
-			if i+1 < len(lines) {
-				nextLine := strings.TrimSpace(lines[i+1])
-				matches = totalTimePattern.FindStringSubmatch(nextLine)
-				if len(matches) > 1 {
-					val, _ := strconv.ParseFloat(matches[1], 64)
-					result.PPTotalTimeMs = val
-				}
-			}
+	// fields[0] is empty (leading |), fields[-1] is empty (trailing |)
+		// fields[-2] = t/s value, fields[-3] = test name
+		fields := strings.Split(line, "|")
+		if len(fields) < 8 {
+			continue
 		}
 
-		// Single token generation speed
-		if strings.Contains(strings.ToLower(line), "single") && strings.Contains(strings.ToLower(line), "token") && strings.Contains(strings.ToLower(line), "generation") {
-			matches := tpsPattern.FindStringSubmatch(line)
-			if len(matches) > 1 {
-				val, _ := strconv.ParseFloat(matches[1], 64)
-				result.SGTTokensPerSecond = val
-			}
-			if i+1 < len(lines) {
-				nextLine := strings.TrimSpace(lines[i+1])
-				matches = totalTimePattern.FindStringSubmatch(nextLine)
-				if len(matches) > 1 {
-					val, _ := strconv.ParseFloat(matches[1], 64)
-					result.SGTTotalTimeMs = val
-				}
-			}
+		tsName := strings.TrimSpace(fields[len(fields)-3])
+		tsName = strings.ToLower(tsName)
+
+		matches := tsPattern.FindStringSubmatch(line)
+		if len(matches) < 2 {
+			continue
+		}
+
+		val, err := strconv.ParseFloat(matches[1], 64)
+		if err != nil {
+			continue
+		}
+
+		if strings.HasPrefix(tsName, "pp") {
+			result.PPTokensPerSecond = val
+		} else if strings.HasPrefix(tsName, "tg") || strings.HasPrefix(tsName, "sg") {
+			result.SGTTokensPerSecond = val
+		} else if strings.HasPrefix(tsName, "mq") {
+			result.MQTTokensPerSecond = val
 		}
 	}
-
 	return result
 }

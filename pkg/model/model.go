@@ -128,6 +128,7 @@ func (s *BenchmarkStore) GetLatest(modelName string) (BenchmarkResult, bool) {
 	if err != nil {
 		return BenchmarkResult{}, false
 	}
+
 	var latest BenchmarkResult
 	found := false
 	for _, r := range results {
@@ -137,4 +138,12 @@ func (s *BenchmarkStore) GetLatest(modelName string) (BenchmarkResult, bool) {
 		}
 	}
 	return latest, found
+}
+
+// Clear removes all benchmark results
+func (s *BenchmarkStore) Clear() error {
+	if s.FilePath == "" {
+		s.FilePath = s.DefaultPath()
+	}
+	return os.Remove(s.FilePath)
 }
