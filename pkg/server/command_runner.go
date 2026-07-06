@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -205,7 +206,7 @@ func (r *CommandRunner) addLog(msg string) {
 	}
 }
 
-func (r *CommandRunner) cleanup(ctx context.Context) {
+func (r *CommandRunner) cleanup(_ context.Context) {
 	r.status = model.StatusStopped
 	if r.stopFunc != nil {
 		r.stopFunc()
@@ -282,5 +283,127 @@ func ListLocalModels() ([]model.Model, error) {
 	}
 
 	return models, nil
+}
+
+// RunningLlamaProcess holds info about a detected running llama server.
+type RunningLlamaProcess struct {
+	PID  int
+	Port int
+}
+
+// FindRunningLlamaServers looks for running llama server processes using pgrep/ps.
+// Returns a list of PIDs and their ports if detectable.
+func FindRunningLlamaServers() ([]RunningLlamaProcess, error) {
+	// Try pgrep first (Linux/macOS)
+	if _, err := exec.LookPath("pgrep"); err == nil {
+		cmd := exec.Command("pgrep", "-f", "llama.*serve")
+		output, err := cmd.Output()
+		if err != nil {
+			return nil, nil // No processes found
+		}
+		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+		var procs []RunningLlamaProcess
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			pid, err := strconv.Atoi(line)
+			if err != nil {
+				continue
+			}
+			procs = append(procs, RunningLlamaProcess{PID: pid})
+		}
+		return procs, nil
+	}
+
+	// Fallback: try ps
+	cmd := exec.Command("ps", "aux")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to run ps: %w", err)
+	}
+
+	var procs []RunningLlamaProcess
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.Contains(line, "llama") && strings.Contains(line, "serve") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				pid, err := strconv.Atoi(parts[1])
+				if err == nil {
+					procs = append(procs, RunningLlamaProcess{PID: pid})
+				}
+			}
+		}
+	}
+	return procs, nil
+}
+
+// KillLlamaServer sends SIGTERM to a process by PID.
+func KillLlamaServer(pid int) error {
+	cmd := exec.Command("kill", fmt.Sprintf("%d", pid))
+	return cmd.Run()
+}
+
+// KillLlamaServers sends SIGTERM to all detected running llama servers.
+func KillLlamaServers() error {
+	procs, err := FindRunningLlamaServers()
+	if err != nil {
+		return err
+	}
+	for _, p := range procs {
+		if err := KillLlamaServer(p.PID); err != nil {
+			return fmt.Errorf("failed to kill PID %d: %w", p.PID, err)
+		}
+	}
+	return nil
+}
+
+// MockRunner implements ProcessRunner for UI testing without launching real processes.
+type MockRunner struct {
+	status  model.ProcessStatus
+	logs    []string
+	err     error
+	logChan chan string
+}
+
+// NewMockRunner creates a new MockRunner instance.
+func NewMockRunner() *MockRunner {
+	return &MockRunner{
+		status:  model.StatusStopped,
+		logChan: make(chan string, 100),
+	}
+}
+
+// Start simulates starting a process by sending mock logs.
+func (r *MockRunner) Start(ctx context.Context, m model.Model) (<-chan string, error) {
+	r.status = model.StatusRunning
+	go func() {
+		r.logChan <- "[mock] Starting " + m.Name
+		time.Sleep(100 * time.Millisecond)
+		r.logChan <- "[mock] " + m.Name + " is running"
+		close(r.logChan)
+	}()
+	return r.logChan, nil
+}
+
+// Stop simulates stopping the process.
+func (r *MockRunner) Stop() error {
+	r.status = model.StatusStopped
+	return nil
+}
+
+// Status returns the current mock status.
+func (r *MockRunner) Status() ProcessInfo {
+	return ProcessInfo{
+		Status: r.status,
+		Logs:   r.logs,
+		Error:  r.err,
+	}
+}
+
+// ClearError clears any stored error state.
+func (r *MockRunner) ClearError() {
+	r.err = nil
 }
 

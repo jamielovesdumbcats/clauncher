@@ -1,80 +1,126 @@
-# Clauncher project aim
+# Clauncher — Agent Guide
 
-This is a blank repo whic aims to creater a TUI for the purposes of launching claude code cli and llama cpp with different local models.
+## What It Is
 
-llama cpp is launched with
+A Go TUI (Terminal User Interface) for launching and managing local LLM inference via **llama.cpp**, and launching AI-powered CLI tools (Claude Code, Opencode, Crush) against those local models.
 
-llama serve -hf modelname
-llama serve -hf  mradermacher/gemma-4-26B-A4B-it-GGUF:IQ4_XS
+Built with the [Charmbracelet](https://charm.land) ecosystem: Bubble Tea (TUI framework), Lip Gloss (styling).
 
-and a list of model names possible to serve in the local cache is available via
+---
 
-llama serve -cl
+## Commands
 
-and looks like
+| Action | Command |
+|--------|---------|
+| Build | `go build -o clauncher ./cmd/clauncher/main.go` |
+| Run | `./clauncher` |
+| Test | `go test ./...` |
 
-number of models in cache: 10
-   1. mradermacher/gemma-4-26B-A4B-it-GGUF:IQ4_XS
-   2. mradermacher/Qwen3.6-27B-GGUF:IQ4_XS
-   3. google/gemma-4-26B-A4B-it-qat-q4_0-gguf:IT
-   4. Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-GGUF:Q4_K_M
-   5. mradermacher/Qwen3.5-21B-Claude-4.6-Opus-Deckard-Heretic-Uncensored-Thinking-i1-GGUF:Q4_K_M
-   6. mradermacher/Mistral-Nemo-2407-12B-Thinking-Claude-Gemini-GPT5.2-Uncensored-HERETIC-GGUF:Q4_K_M
-   7. huihui-ai/Huihui-Qwen3.6-27B-abliterated-MTP-GGUF:Q4_K
-   8. mradermacher/gpt-oss-20b-GGUF:Q4_K_M
-   9. deepreinforce-ai/Ornith-1.0-9B-GGUF:Q4_K_M
-  10. deepreinforce-ai/Ornith-1.0-35B-GGUF:Q4_K_M
+**Always run the build command after code changes** to verify before telling the user you're done.
 
-llama server message on my machine
-server is listening on http://127.0.0.1:8080
+---
 
-claude is launched with
+## Architecture
 
-claude --model modelname
-claude --model  mradermacher/gemma-4-26B-A4B-it-GGUF:IQ4_XS
+```
+cmd/clauncher/main.go          — entry point: discovers models, wires runner + UI
+pkg/model/model.go             — domain types (Model, LaunchOption, ProcessStatus)
+pkg/server/command_runner.go   — real process lifecycle (start/stop/logs) + ListLocalModels()
+pkg/server/runner_test.go      — tests against MockRunner
+pkg/ui/model.go                — Bubble Tea App model (views, update, launch methods)
+pkg/ui/messages/messages.go    — Bubble Tea message types
+pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
+```
 
-The model name needs to match the model name used by llama cpp
+### Control Flow
 
-I believe each needs to be launched within its own terminal but am not 100% on that, it might make sense to use tmux for managing this but feel free to disagree on this as I'm not 100% set on it.
+1. **Startup**: `main.go` calls `server.ListLocalModels()` (runs `llama serve -cl`), creates a `CommandRunner`, passes both to `ui.NewApp()`.
+2. **Selection View**: User picks a model by number → transitions to **Launch Options View**.
+3. **Launch Options**: User picks how to launch (Server, CLI, Claude Code, Opencode, Crush) → `LaunchOptionSelectedMsg` is dispatched.
+4. **Dispatch** (in `App.Update`):
+   - `LaunchLlamaServer` → dashboard view + `startProcess()` (managed via CommandRunner)
+   - `LaunchLlamaCLI` → opens external terminal (or fallback to current terminal)
+   - `LaunchClaudeCode` / `LaunchOpencode` / `LaunchCrush` → starts llama server in background, writes app-specific config, then launches the app
+5. **Dashboard View**: Shows process status, streaming logs, start/stop controls.
 
-The user should be asked which folder they with to launch claude in with an option to use the current as the default.
+### Process Lifecycle (`CommandRunner`)
 
-Ideally display claude within a window using our ui but opening in its own window would work as an option
+- `Start()` creates `exec.CommandContext` with a cancellable context, pipes stdout/stderr, spawns `monitorPipes()` and `monitorExit()` goroutines.
+- Logs flow through a buffered channel (`logChan`, size 100) — non-blocking sends, drops lines if full.
+- `Stop()` cancels the context. `monitorExit()` detects context cancellation vs. crash and sets `StatusStopped` or `StatusCrashed`.
+- `ClearError()` resets error state after intentional stops (called from `toggleProcess`).
 
-For the tui creation I would like you to use go lang and the charm.sh libraries as they shoudl provide us with a beautiful interface.
+---
 
-terminal user interface
-https://github.com/charmbracelet/bubbletea
+## Key Patterns & Gotchas
 
-bubble tea components
-https://github.com/charmbracelet/bubbles
+### Bubble Tea Model
 
-terminal style and layout
-https://github.com/charmbracelet/lipgloss
+- `App` is the root `tea.Model`. Views are simple string renderers; state transitions happen in `Update()` via `currentView`.
+- Three view states: `ViewSelection`, `ViewDashboard`, `ViewLaunchOptions`.
+- Errors are stored in `a.err` and displayed at the top of `View()`. Clear `a.err` on navigation.
 
-ssh
-https://github.com/charmbracelet/wish
+### Launch Methods (CLI, Claude, Opencode, Crush)
 
-forms
-https://github.com/charmbracelet/huh
+- `launchLlamaCLI`: tries terminal emulators (gnome-terminal, kitty, alacritty, etc.), falls back to foreground `sh -c`.
+- `launchClaudeCode` / `launchOpencode` / `launchCrush`: all follow the same pattern — start llama server, `time.Sleep(2s)`, write config JSON, launch app.
+- **Config merging is TODO**: if the config file already exists, current code skips merge (`_ = data`). Future work should parse and inject the provider into existing JSON.
+- These methods run in a `tea.Cmd` closure — any `exec.Command` errors must return a `messages.ErrorMsg`.
 
-I would like to start with just using the models already installed as the initial testing then move on to having an interface to add new models, remove old ones, track usage of each to assist in deciding on which to remove.
-We should also have the capability to stop the models and claude should clause or llama crash
+### Model Discovery
 
-Other expansion features could include:
+- `ListLocalModels()` runs `llama serve -cl` with a 10s timeout and parses numbered output lines.
+- Model IDs are sanitized (`/` → `-`). Display names strip `-GGUF` suffixes.
+- The full HF path with quant (e.g., `mradermacher/gemma-4-26B-A4B-it-GGUF:IQ4_XS`) is stored in `Config["model_name"]`.
 
-- assist with the setup on llama cpp and claude so that claude can work with the local model
+### Signal Handling
 
-- specify where the serve is via the ip allowing for users to host on a different machine
+- Intentional stops via `runner.Stop()` cancel the context. `monitorExit()` checks `procCtx.Err() != nil` to distinguish from crashes.
+- The "signal: killed" issue was fixed by treating context-cancellation exits as `StatusStopped`, not `StatusCrashed`.
 
-- setting the context length for the model and claude via the ui and any other common adjustments for better performance youd recommend.
+### Process.Release()
 
-- add a function to trigger a bench mark of each model and store the data
+- After `cmd.Start()` in launch methods, call `cmd.Process.Release()` to avoid goroutine leaks.
+- **Always call `Start()` before accessing `cmd.Process`** — nil pointer panics otherwise (was a real bug in `launchLlamaCLI` fallback path).
 
-- check huggingface for new models suitable for llama cpp
+---
 
-- get gpu usage information such as memory and processing then show it within the ui
+## Launch Config Details (from CLAUDE.md)
 
-- launch other apps using the local model such as https://github.com/charmbracelet/crush and https://github.com/anomalyco/opencode/
+### Claude Code
+- Set `ANTHROPIC_BASE_URL=https://localhost:<port>` and run `claude --model my-model`.
+- Add `"CLAUDE_CODE_ATTRIBUTION_HEADER": "0"` to `~/.claude/settings.json` for KV cache performance.
 
-- offer a choice between llama cpp and ollama as the backend for inference
+### Opencode
+- Config: `~/.config/opencode/opencode.json`. Provider key: `"llama-cpp"` under `"provider"`.
+- Base URL format: `http://localhost:<port>/v1`.
+
+### Crush
+- Config: `~/.config/crush/crush.json`. Provider key: `"llama-cpp"` under `"providers"`.
+- Base URL format: `http://localhost:<port>/v1/` (trailing slash matters).
+- Crush requires context >= 4096 — warn user if model context is smaller.
+
+---
+
+## Feature Backlog
+
+See `CLAUDE.md` → "New Features" for the tracked checklist. Highlights:
+
+- [ ] Ask which working directory to launch Claude/opencode/crush in
+- [ ] Auto-setup `~/.claude/settings.json` for local usage
+- [ ] Find and kill existing llama processes before starting new ones
+- [ ] Configurable port and context length via UI
+- [ ] Context length warnings for Crush/opencode (< 4096)
+- [ ] Merge existing app configs (Opencode, Crush) instead of skipping
+- [ ] GPU usage display
+- [ ] Model benchmarking
+- [ ] HuggingFace model discovery
+- [ ] Ollama as alternative backend
+
+---
+
+## Dependencies
+
+- `github.com/charmbracelet/bubbletea` — TUI framework
+- `github.com/charmbracelet/lipgloss` — terminal styling
+- No external HTTP libraries, databases, or config parsers yet (all config is raw `os.ReadFile` + `json.MarshalIndent`).

@@ -8,6 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"clauncher/pkg/model"
@@ -15,6 +18,7 @@ import (
 	"clauncher/pkg/ui/messages"
 	"clauncher/pkg/ui/theme"
 
+	textinput "github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -24,6 +28,8 @@ const (
 	ViewSelection ViewState = iota
 	ViewDashboard
 	ViewLaunchOptions
+	ViewBenchmark
+	ViewLaunchConfig
 )
 
 // App is the root model for the application.
@@ -48,22 +54,58 @@ type App struct {
 	// Pending model selected, waiting for launch option
 	pendingModel *model.Model
 
+	// Benchmark state
+	benchmarkStore     *model.BenchmarkStore
+	benchmarkResults   []model.BenchmarkResult
+	benchmarking       bool
+	benchmarkModelName string
+
 	// Context for process management
 	ctx      context.Context
 	cancelFn context.CancelFunc
+
+	// Launch config state
+	portInput      textinput.Model
+	ctxSizeInput   textinput.Model
+	workDirInput   textinput.Model
+	focusedInput   int // 0=port, 1=ctx, 2=dir
+	pendingLaunch  model.LaunchOption
+	ctxSizeWarning string
 }
 
 // NewApp initializes a new application instance.
 func NewApp(models []model.Model, runner server.ProcessRunner) *App {
 	ctx, cancel := context.WithCancel(context.Background())
+	store := model.NewBenchmarkStore("")
+	results, _ := store.Load()
+
+	portInput := textinput.New()
+	portInput.Placeholder = "8081"
+	portInput.SetValue("8081")
+
+	ctxSizeInput := textinput.New()
+	ctxSizeInput.Placeholder = "131072"
+	ctxSizeInput.SetValue("131072")
+
+	home, _ := os.UserHomeDir()
+	workDirInput := textinput.New()
+	workDirInput.Placeholder = home
+	workDirInput.SetValue(home)
+
 	return &App{
-		currentView: ViewSelection,
-		theme:       theme.NewTheme(),
-		models:      models,
-		runner:      runner,
-		logs:        []string{},
-		ctx:         ctx,
-		cancelFn:    cancel,
+		currentView:      ViewSelection,
+		theme:            theme.NewTheme(),
+		models:           models,
+		runner:           runner,
+		logs:             []string{},
+		ctx:              ctx,
+		cancelFn:         cancel,
+		benchmarkStore:   store,
+		benchmarkResults: results,
+		portInput:        portInput,
+		ctxSizeInput:     ctxSizeInput,
+		workDirInput:     workDirInput,
+		focusedInput:     0,
 	}
 }
 
@@ -90,9 +132,20 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, a.toggleProcess()
 			}
 		case "b", "esc":
-			// Go back to selection from dashboard
-			if a.currentView == ViewDashboard {
+			// Go back to selection from dashboard or benchmark view
+			if a.currentView == ViewDashboard || a.currentView == ViewLaunchOptions || a.currentView == ViewBenchmark || a.currentView == ViewLaunchConfig {
 				return a, a.goBack()
+			}
+		case "m":
+			// Navigate to benchmark results or run benchmark
+			if a.currentView == ViewSelection {
+				a.currentView = ViewBenchmark
+				return a, nil
+			}
+			if a.currentView == ViewBenchmark && a.pendingModel != nil && !a.benchmarking {
+				a.benchmarking = true
+				a.benchmarkModelName = a.pendingModel.Name
+				return a, a.runBenchmark(*a.pendingModel)
 			}
 		case "r":
 			// Refresh local models list
@@ -119,6 +172,29 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else if m.String() == "5" {
 					option = model.LaunchCrush
 				}
+
+				// Option 6: run benchmark
+				if m.String() == "6" {
+					if a.pendingModel != nil {
+						a.currentView = ViewBenchmark
+						a.benchmarking = true
+						a.benchmarkModelName = a.pendingModel.Name
+						return a, a.runBenchmark(*a.pendingModel)
+					}
+					return a, nil
+				}
+
+				// Options 3-5 show a config prompt first
+				if option == model.LaunchClaudeCode || option == model.LaunchOpencode || option == model.LaunchCrush {
+					a.pendingLaunch = option
+					a.currentView = ViewLaunchConfig
+					a.focusedInput = 0
+					a.ctxSizeWarning = ""
+					cmds := []tea.Cmd{
+						a.portInput.Focus(),
+					}
+					return a, tea.Batch(cmds...)
+				}
 				return a, func() tea.Msg {
 					return messages.LaunchOptionSelectedMsg{
 						Option: option,
@@ -126,6 +202,87 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+		}
+
+		// Handle text input in launch config view
+		if a.currentView == ViewLaunchConfig {
+			if m.String() == "tab" {
+				a.focusedInput = (a.focusedInput + 1) % 3
+				a.portInput.Blur()
+				a.ctxSizeInput.Blur()
+				a.workDirInput.Blur()
+				switch a.focusedInput {
+				case 0:
+					a.portInput.Focus()
+				case 1:
+					a.ctxSizeInput.Focus()
+				case 2:
+					a.workDirInput.Focus()
+				}
+				return a, nil
+			}
+			if m.String() == "shift+tab" {
+				a.focusedInput--
+				if a.focusedInput < 0 {
+					a.focusedInput = 2
+				}
+				a.portInput.Blur()
+				a.ctxSizeInput.Blur()
+				a.workDirInput.Blur()
+				switch a.focusedInput {
+				case 0:
+					a.portInput.Focus()
+				case 1:
+					a.ctxSizeInput.Focus()
+				case 2:
+					a.workDirInput.Focus()
+				}
+				return a, nil
+			}
+			if m.String() == "enter" {
+				// Validate and proceed with launch
+				port := a.portInput.Value()
+				if port == "" {
+					port = "8081"
+				}
+				ctxSize := a.ctxSizeInput.Value()
+				if ctxSize == "" {
+					ctxSize = "131072"
+				}
+				workDir := a.workDirInput.Value()
+				if workDir == "" {
+					home, _ := os.UserHomeDir()
+					workDir = home
+				}
+
+				// Context size warning
+				if ctxSizeInt, _ := strconv.Atoi(ctxSize); ctxSizeInt > 0 && ctxSizeInt < 4096 {
+					a.ctxSizeWarning = "Warning: context size < 4096 may cause issues with Opencode/Crush. Press Enter again to proceed or 'b' to change."
+					return a, nil
+				}
+				a.ctxSizeWarning = ""
+
+				// Proceed with the launch
+				a.currentView = ViewSelection
+				return a, func() tea.Msg {
+					return messages.LaunchOptionSelectedMsg{
+						Option: a.pendingLaunch,
+						Model:  *a.pendingModel,
+					}
+				}
+			}
+
+			// Route key only to the focused input
+			var cmd tea.Cmd
+			switch a.focusedInput {
+			case 0:
+				a.portInput, cmd = a.portInput.Update(msg)
+			case 1:
+				a.ctxSizeInput, cmd = a.ctxSizeInput.Update(msg)
+			case 2:
+				a.workDirInput, cmd = a.workDirInput.Update(msg)
+			}
+			return a, cmd
 		}
 	case messages.LogMsg:
 		a.logs = append(a.logs, m.Line)
@@ -184,14 +341,26 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Launch CLI in new terminal
 			return a, a.launchLlamaCLI(m.Model)
 		case model.LaunchClaudeCode:
-			// Launch Claude Code with local model
-			return a, a.launchClaudeCode(m.Model)
+			// Launch Claude Code with local model using config
+			return a, a.launchClaudeCodeWithConfig(m.Model, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value())
 		case model.LaunchOpencode:
-			// Launch Opencode with local model
-			return a, a.launchOpencode(m.Model)
+			// Launch Opencode with local model using config
+			return a, a.launchOpencodeWithConfig(m.Model, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value())
 		case model.LaunchCrush:
-			// Launch Crush with local model
-			return a, a.launchCrush(m.Model)
+			// Launch Crush with local model using config
+			return a, a.launchCrushWithConfig(m.Model, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value())
+		}
+		return a, nil
+
+	case messages.BenchmarkCompleteMsg:
+		a.benchmarking = false
+		if m.Error != nil {
+			a.err = m.Error
+			return a, nil
+		}
+		if m.Result != nil {
+			_ = a.benchmarkStore.Add(*m.Result)
+			a.benchmarkResults = append(a.benchmarkResults, *m.Result)
 		}
 		return a, nil
 	}
@@ -227,12 +396,16 @@ func (a *App) toggleProcess() tea.Cmd {
 
 // goBack returns to the selection view
 func (a *App) goBack() tea.Cmd {
-	if a.currentView == ViewLaunchOptions {
+	if a.currentView == ViewLaunchConfig {
+		a.currentView = ViewLaunchOptions
+	} else if a.currentView == ViewLaunchOptions {
 		a.currentView = ViewSelection
 		a.pendingModel = nil
 	} else if a.currentView == ViewDashboard {
 		a.currentView = ViewSelection
 		a.selectedModel = nil
+	} else if a.currentView == ViewBenchmark {
+		a.currentView = ViewSelection
 	}
 	a.err = nil // Clear any error state when returning to selection
 	return nil
@@ -261,6 +434,10 @@ func (a *App) View() string {
 		return a.renderLaunchOptionsView()
 	case ViewDashboard:
 		return a.renderDashboardView()
+	case ViewBenchmark:
+		return a.renderBenchmarkView()
+	case ViewLaunchConfig:
+		return a.renderLaunchConfigView()
 	default:
 		return "Unknown View"
 	}
@@ -268,35 +445,38 @@ func (a *App) View() string {
 
 // renderSelectionView renders the model selection UI.
 func (a *App) renderSelectionView() string {
-	s := a.theme.Header.Render("Clauncher - Select a Model") + "\n\n"
+	var s strings.Builder
+	s.WriteString(a.theme.Header.Render("Clauncher - Select a Model"))
+	s.WriteString("\n\n")
 
 	// Show loading indicator if refreshing
 	if a.refreshing {
-		s += "Refreshing model list...\n\n"
+		s.WriteString("Refreshing model list...\n\n")
 	}
 
 	// Show error if refresh failed
 	if a.err != nil && a.refreshing {
-		s += a.theme.Error.Render(fmt.Sprintf("Error refreshing models: %v\n", a.err)) + "\n"
+		s.WriteString(a.theme.Error.Render(fmt.Sprintf("Error refreshing models: %v", a.err)))
+		s.WriteString("\n\n")
 	}
 
 	if len(a.models) == 0 {
 		if !a.refreshing {
-			s += "No models found. Press 'r' to refresh the model list.\n"
+			s.WriteString("No models found. Press 'r' to refresh the model list.\n")
 		}
 	} else {
 		for i, m := range a.models {
-			s += fmt.Sprintf("  %d. %s\n", i+1, m.Name)
+			fmt.Fprintf(&s, "  %d. %s\n", i+1, m.Name)
 		}
 	}
 
-	s += "\nPress 1 to select the first model"
+	s.WriteString("\nPress 1 to select the first model")
 	if len(a.models) > 1 {
-		s += ", 2-N for other models"
+		s.WriteString(", 2-N for other models")
 	}
-	s += ", r to refresh list, q to quit"
+	s.WriteString(", r to refresh, m for benchmarks, q to quit")
 
-	return s
+	return s.String()
 }
 
 // renderLaunchOptionsView renders the launch options UI.
@@ -308,7 +488,8 @@ func (a *App) renderLaunchOptionsView() string {
 	s += "  3. " + a.theme.Info.Render("Launch Claude Code") + " (with local model)\n"
 	s += "  4. " + a.theme.Info.Render("Launch Opencode") + " (with local model)\n"
 	s += "  5. " + a.theme.Info.Render("Launch Crush") + " (with local model)\n"
-	s += "\nPress 1-5 to select, b to go back"
+	s += "  6. " + a.theme.Info.Render("Run Benchmark") + " (for this model)\n"
+	s += "\nPress 1-6 to select, b to go back"
 	return s
 }
 
@@ -407,54 +588,76 @@ func tick() tea.Cmd {
 // launchLlamaCLI launches the llama CLI in a new terminal window
 func (a *App) launchLlamaCLI(m model.Model) tea.Cmd {
 	return func() tea.Msg {
-		var cmd *exec.Cmd
-		var err error
-
-		switch runtime.GOOS {
-		case "linux":
-			// Try common terminal emulators on Linux
-			terminals := []string{"gnome-terminal", "konsole", "xterm", "terminator"}
-			for _, term := range terminals {
-				if _, err := exec.LookPath(term); err == nil {
-					cmd = exec.Command(term, "-e", "sh", "-c", fmt.Sprintf(
-						"llama --model %s && %s -e read", m.Config["model_name"], term))
-					err = cmd.Start()
-					if err == nil {
-						cmd.Process.Release()
-						return messages.StatusUpdateMsg{Status: model.StatusStopped}
-					}
-				}
-			}
-			// Fallback to basic shell execution
-			cmd = exec.Command("sh", "-c", fmt.Sprintf("llama --model %s", m.Config["model_name"]))
-		case "darwin":
-			// macOS - use osascript to open Terminal
-			cmd = exec.Command("osascript", "-e",
-				fmt.Sprintf(`tell application "Terminal" to do script "llama --model %s"`, m.Config["model_name"]))
-		default:
-			return messages.ErrorMsg{Err: fmt.Errorf("unsupported OS: %s", runtime.GOOS)}
-		}
-
-		if err != nil {
-			return messages.ErrorMsg{Err: fmt.Errorf("failed to launch CLI: %w", err)}
-		}
-
-		cmd.Process.Release()
-		return messages.StatusUpdateMsg{Status: model.StatusStopped}
+		script := fmt.Sprintf("llama cli -hf %s && read", m.Config["model_name"])
+		return spawnInTerminal(script)
 	}
 }
 
-// launchClaudeCode launches Claude Code connected to a local llama server
-func (a *App) launchClaudeCode(m model.Model) tea.Cmd {
-	return func() tea.Msg {
-		port := "8081" // Default port
+// spawnInTerminal tries to run a shell command in a terminal emulator.
+// Falls back to background execution if no emulator is found.
+func spawnInTerminal(script string) tea.Msg {
+	fmt.Fprintf(os.Stderr, "[clauncher] spawnInTerminal: script=%q\n", script)
 
+	switch runtime.GOOS {
+	case "linux":
+		type terminalSpec struct {
+			name string
+			args []string
+		}
+		terminals := []terminalSpec{
+			{"gnome-terminal", []string{"--", "sh", "-c", script}},
+			{"konsole", []string{"-e", "sh", "-c", script}},
+			{"xterm", []string{"-e", "sh", "-c", script}},
+			{"terminator", []string{"-x", "sh", "-c", script}},
+			{"foot", []string{"-e", "sh", "-c", script}},
+			{"kitty", []string{"--", "sh", "-c", script}},
+			{"alacritty", []string{"-e", "sh", "-c", script}},
+		}
+		for _, term := range terminals {
+			if path, err := exec.LookPath(term.name); err == nil {
+				fmt.Fprintf(os.Stderr, "[clauncher] spawnInTerminal: found terminal %s at %s\n", term.name, path)
+				cmd := exec.Command(path, term.args...)
+				cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+				if err := cmd.Start(); err == nil {
+					cmd.Process.Release()
+					return messages.StatusUpdateMsg{Status: model.StatusStopped}
+				}
+				fmt.Fprintf(os.Stderr, "[clauncher] spawnInTerminal: failed to start %s: %v\n", term.name, err)
+			}
+		}
+		// Fallback: run detached in background
+		fmt.Fprintf(os.Stderr, "[clauncher] spawnInTerminal: no terminal emulator found, falling back to background execution\n")
+		cmd := exec.Command("sh", "-c", script+" & disown")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd.Stdin = nil
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		if err := cmd.Start(); err != nil {
+			return messages.ErrorMsg{Err: fmt.Errorf("no terminal emulator found and background launch failed: %w. Install a terminal emulator (foot, kitty, etc.)", err)}
+		}
+		cmd.Process.Release()
+		return messages.StatusUpdateMsg{Status: model.StatusStopped}
+	case "darwin":
+		cmd := exec.Command("osascript", "-e", fmt.Sprintf(`tell application "Terminal" to do script "%s"`, script))
+		if err := cmd.Start(); err != nil {
+			return messages.ErrorMsg{Err: fmt.Errorf("failed to launch in Terminal: %w", err)}
+		}
+		cmd.Process.Release()
+		return messages.StatusUpdateMsg{Status: model.StatusStopped}
+	default:
+		return messages.ErrorMsg{Err: fmt.Errorf("unsupported OS: %s", runtime.GOOS)}
+	}
+}
+
+// launchClaudeCodeWithConfig launches Claude Code connected to a local llama server
+func (a *App) launchClaudeCodeWithConfig(m model.Model, port, ctxSize, workDir string) tea.Cmd {
+	return func() tea.Msg {
 		// 1. Start llama server with specific flags for Claude compatibility
 		serverCmd := exec.Command("llama", "serve",
 			"-hf", m.Config["model_name"],
 			"--port", port,
-			"--ctx-size", "131072", // Large context
-			"--flash-attn", "on",   // Performance
+			"--ctx-size", ctxSize,
+			"--flash-attn", "on",
 		)
 
 		if err := serverCmd.Start(); err != nil {
@@ -464,18 +667,267 @@ func (a *App) launchClaudeCode(m model.Model) tea.Cmd {
 		// 2. Wait for server to be ready
 		time.Sleep(2 * time.Second)
 
-		// 3. Set environment variable and launch Claude
-		envCmd := exec.Command("sh", "-c",
-			fmt.Sprintf(`export ANTHROPIC_BASE_URL=https://localhost:%s && claude --model my-model`, port))
-
-		if err := envCmd.Start(); err != nil {
-			serverCmd.Process.Kill()
-			return messages.ErrorMsg{Err: fmt.Errorf("failed to launch claude: %w", err)}
+		// 3. Setup Claude settings.json for KV cache performance
+		{
+			settingsDir := filepath.Join(os.Getenv("HOME"), ".claude")
+			settingsPath := filepath.Join(settingsDir, "settings.json")
+			if err := os.MkdirAll(settingsDir, 0o755); err == nil {
+				var settings map[string]any
+				data, err := os.ReadFile(settingsPath)
+				if err == nil {
+					json.Unmarshal(data, &settings)
+				} else {
+					settings = make(map[string]any)
+				}
+				if env, ok := settings["env"].(map[string]any); ok {
+					env["CLAUDE_CODE_ATTRIBUTION_HEADER"] = "0"
+				} else {
+					settings["env"] = map[string]any{"CLAUDE_CODE_ATTRIBUTION_HEADER": "0"}
+				}
+				if data, err := json.MarshalIndent(settings, "", "  "); err == nil {
+					os.WriteFile(settingsPath, data, 0o644)
+				}
+			}
 		}
 
-		envCmd.Process.Release()
-
-		// Return to selection view - processes run independently
-		return messages.StatusUpdateMsg{Status: model.StatusStopped}
+		// 4. Launch Claude in terminal
+		_ = serverCmd.Process.Release()
+		claudeScript := fmt.Sprintf(`cd "%s" && ANTHROPIC_BASE_URL=http://localhost:%s claude --model my-model && read`, workDir, port)
+		return spawnInTerminal(claudeScript)
 	}
+}
+
+// launchOpencodeWithConfig launches Opencode connected to a local llama server
+func (a *App) launchOpencodeWithConfig(m model.Model, port, ctxSize, workDir string) tea.Cmd {
+	return func() tea.Msg {
+		serverCmd := exec.Command("llama", "serve",
+			"-hf", m.Config["model_name"],
+			"--port", port,
+			"--ctx-size", ctxSize,
+			"--flash-attn", "on",
+		)
+
+		if err := serverCmd.Start(); err != nil {
+			return messages.ErrorMsg{Err: fmt.Errorf("failed to start llama server: %w", err)}
+		}
+
+		time.Sleep(2 * time.Second)
+
+		configDir := filepath.Join(os.Getenv("HOME"), ".config", "opencode")
+		configPath := filepath.Join(configDir, "opencode.json")
+
+		if err := os.MkdirAll(configDir, 0o755); err != nil {
+			serverCmd.Process.Kill()
+			return messages.ErrorMsg{Err: fmt.Errorf("failed to create config directory: %w", err)}
+		}
+
+		var config map[string]any
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			config = map[string]any{
+				"$schema": "https://opencode.ai/config.json",
+			}
+		} else {
+			config = make(map[string]any)
+			if err := json.Unmarshal(data, &config); err != nil {
+				serverCmd.Process.Kill()
+				return messages.ErrorMsg{Err: fmt.Errorf("failed to parse existing opencode config: %w", err)}
+			}
+			if config == nil {
+				config = make(map[string]any)
+			}
+		}
+
+		// Merge llama-cpp provider into existing config
+		provider, _ := config["provider"].(map[string]any)
+		if provider == nil {
+			provider = make(map[string]any)
+			config["provider"] = provider
+		}
+		provider["llama-cpp"] = map[string]any{
+			"npm":  "@ai-sdk/openai-compatible",
+			"name": "llama-cpp (local)",
+			"options": map[string]any{
+				"baseURL": fmt.Sprintf("http://localhost:%s/v1", port),
+			},
+			"models": map[string]any{
+				m.Name: map[string]any{"name": m.Name},
+			},
+		}
+
+		configData, err := json.MarshalIndent(config, "", "  ")
+		if err != nil {
+			serverCmd.Process.Kill()
+			return messages.ErrorMsg{Err: fmt.Errorf("failed to marshal config: %w", err)}
+		}
+
+		if err := os.WriteFile(configPath, configData, 0o644); err != nil {
+			serverCmd.Process.Kill()
+			return messages.ErrorMsg{Err: fmt.Errorf("failed to write config: %w", err)}
+		}
+
+		_ = serverCmd.Process.Release()
+		opencodeScript := fmt.Sprintf(`cd "%s" && opencode && read`, workDir)
+		return spawnInTerminal(opencodeScript)
+	}
+}
+
+// launchCrushWithConfig launches Crush connected to a local llama server
+func (a *App) launchCrushWithConfig(m model.Model, port, ctxSize, workDir string) tea.Cmd {
+	return func() tea.Msg {
+		serverCmd := exec.Command("llama", "serve",
+			"-hf", m.Config["model_name"],
+			"--port", port,
+			"--ctx-size", ctxSize,
+			"--flash-attn", "on",
+		)
+
+		if err := serverCmd.Start(); err != nil {
+			return messages.ErrorMsg{Err: fmt.Errorf("failed to start llama server: %w", err)}
+		}
+
+		time.Sleep(2 * time.Second)
+
+		configDir := filepath.Join(os.Getenv("HOME"), ".config", "crush")
+		configPath := filepath.Join(configDir, "crush.json")
+
+		if err := os.MkdirAll(configDir, 0o755); err != nil {
+			serverCmd.Process.Kill()
+			return messages.ErrorMsg{Err: fmt.Errorf("failed to create config directory: %w", err)}
+		}
+
+		var config map[string]any
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			config = map[string]any{
+				"$schema": "https://charm.land/crush.json",
+			}
+		} else {
+			config = make(map[string]any)
+			if err := json.Unmarshal(data, &config); err != nil {
+				serverCmd.Process.Kill()
+				return messages.ErrorMsg{Err: fmt.Errorf("failed to parse existing crush config: %w", err)}
+			}
+			if config == nil {
+				config = make(map[string]any)
+			}
+		}
+
+		// Merge llama-cpp provider into existing config
+		providers, _ := config["providers"].(map[string]any)
+		if providers == nil {
+			providers = make(map[string]any)
+			config["providers"] = providers
+		}
+		ctxWindowSize, _ := strconv.ParseInt(ctxSize, 10, 64)
+		providers["llama-cpp"] = map[string]any{
+			"name":     "llama-cpp",
+			"base_url": fmt.Sprintf("http://localhost:%s/v1/", port),
+			"type":     "openai",
+			"models": []map[string]any{
+				{
+					"name":           m.Name,
+					"id":             fmt.Sprintf("%s-ctx-%s", m.Name, ctxSize),
+					"context_window": ctxWindowSize,
+				},
+			},
+		}
+
+		configData, err := json.MarshalIndent(config, "", "  ")
+		if err != nil {
+			serverCmd.Process.Kill()
+			return messages.ErrorMsg{Err: fmt.Errorf("failed to marshal config: %w", err)}
+		}
+
+		if err := os.WriteFile(configPath, configData, 0o644); err != nil {
+			serverCmd.Process.Kill()
+			return messages.ErrorMsg{Err: fmt.Errorf("failed to write config: %w", err)}
+		}
+
+		_ = serverCmd.Process.Release()
+		crushScript := fmt.Sprintf(`cd "%s" && crush && read`, workDir)
+		return spawnInTerminal(crushScript)
+	}
+}
+
+// runBenchmark executes a benchmark for the given model
+func (a *App) runBenchmark(m model.Model) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(a.ctx, 5*time.Minute)
+		defer cancel()
+
+		result, err := server.RunBenchmark(ctx, m)
+		return messages.BenchmarkCompleteMsg{Result: result, Error: err}
+	}
+}
+
+// renderBenchmarkView renders the benchmark results table
+func (a *App) renderBenchmarkView() string {
+	s := a.theme.Header.Render("Benchmark Results") + "\n\n"
+
+	if a.benchmarking {
+		s += fmt.Sprintf("Running benchmark for %s...\n\n", a.benchmarkModelName)
+		s += "This may take a while.\n"
+		s += "\nPress 'b' to go back"
+		return s
+	}
+
+	if len(a.benchmarkResults) == 0 {
+		s += "No benchmarks run yet.\n\n"
+		s += "Select a model then press 'm' to run a benchmark.\n"
+		s += "\nPress 'b' to go back"
+		return s
+	}
+
+	s += fmt.Sprintf("%-4s %-30s %8s %8s %8s %10s\n",
+		"#", "Model", "MQ t/s", "PP t/s", "SGT t/s", "Date")
+	s += "────────────────────────────────────────────────────────────────────────────\n"
+
+	for i, r := range a.benchmarkResults {
+		name := r.ModelName
+		if len(name) > 30 {
+			name = name[:27] + "..."
+		}
+		s += fmt.Sprintf("%-4d %-30s %8.1f %8.1f %8.1f %10s\n",
+			i+1, name, r.MQTTokensPerSecond, r.PPTokensPerSecond,
+			r.SGTTokensPerSecond, r.Timestamp[:10])
+	}
+
+	s += "\nPress 'b' to go back"
+	return s
+}
+
+// renderLaunchConfigView renders the launch configuration UI (port, context size, working dir).
+func (a *App) renderLaunchConfigView() string {
+	var s strings.Builder
+
+	var appName string
+	switch a.pendingLaunch {
+	case model.LaunchClaudeCode:
+		appName = "Claude Code"
+	case model.LaunchOpencode:
+		appName = "Opencode"
+	case model.LaunchCrush:
+		appName = "Crush"
+	default:
+		appName = "App"
+	}
+
+	s.WriteString(a.theme.Header.Render(fmt.Sprintf("Launch %s Config", appName)))
+	s.WriteString("\n\n")
+	s.WriteString(fmt.Sprintf("Model: %s\n\n", a.pendingModel.Name))
+
+	s.WriteString(a.theme.Secondary.Render("Port: ") + a.portInput.View() + "\n")
+	s.WriteString(a.theme.Secondary.Render("Context Size: ") + a.ctxSizeInput.View() + "\n")
+	s.WriteString(a.theme.Secondary.Render("Working Dir: ") + a.workDirInput.View())
+
+	if a.ctxSizeWarning != "" {
+		s.WriteString("\n\n")
+		s.WriteString(a.theme.Warning.Render(a.ctxSizeWarning) + "\n")
+	}
+
+	s.WriteString("\n")
+	s.WriteString("Tab: switch field | Enter: launch | b: go back")
+
+	return s.String()
 }

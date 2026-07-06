@@ -50,3 +50,9 @@ type LaunchOptionSelectedMsg struct {
 	Option model.LaunchOption
 	Model  model.Model
 }
+
+// BenchmarkCompleteMsg is sent when a benchmark run finishes.
+type BenchmarkCompleteMsg struct {
+	Result *model.BenchmarkResult
+	Error  error
+}
