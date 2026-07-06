@@ -136,19 +136,14 @@ if the json already exists we need to insert the provider into the existing conf
 finally we check which directory to use, cd to it and launch with crush
 
 ## New Features
-- [x] Start claude with same model after launching llama
-= [x] Ask which folder to start claude in (default would be current)
 - [ ] Check claude json files for local usage and offer to setup if not already done
 - [ ] Find running llama processes and cancel
-- [x] Option to specify port number
-- [x] Option to specify context length for llama and claude
-- [x] support starting and setup with local running for opencode and crush
-- [x] Command to run 'llama serve -cl' and populate models list from output
-- [x] Run llama benchmark for models, noting the current gpu and logging results in a table
 - [ ] Display gpu usage in clauncher UI
+- [ ] add a pre configured list of models for the user to download configured by a file similar to the current benchmarks file but stored in repo and pushed to git
+- [ ] move launchable models into a config file which starts with no models then runs the refresh on load. if no models are in cache give option to download
+- [ ] enhance ux to that user can choose models or other options with up and down arrow keys
+- [ ] enhance ui to look better using the chrm libraries
 - [ ] Check hugging face for new llama models, list them in tui and offer to pull them
-- [ ] run llama fit-params -hf modelname store details with benchmark data and suggest when launching model. command returns -c 4096 -ngl 0
-- [ ] run llama perplexity -hf modelname store details with benchmark data and display with benchmarking data. command return currently unknown
 
 ## Development Workflow
 **ALWAYS** run the build command and fix any builder errors present before confirming you are done to the user
