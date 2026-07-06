@@ -1,7 +1,6 @@
 {
   "$schema": "https://charm.land/crush.json",
   "options": {
-    "auto_lsp": true,
-    "progress": {}
+    "auto_lsp": true
   }
 }
