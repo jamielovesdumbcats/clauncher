@@ -889,17 +889,17 @@ func (a *App) renderBenchmarkView() string {
 		return s
 	}
 
-	s += fmt.Sprintf("%-4s %-30s %8s %8s %8s %10s\n",
-		"#", "Model", "MQ t/s", "PP t/s", "SGT t/s", "Date")
-	s += "────────────────────────────────────────────────────────────────────────────\n"
+	s += fmt.Sprintf("%-4s %-30s %10s %10s %10s\n",
+		"#", "Model", "PP t/s", "SGT t/s", "Date")
+	s += "─────────────────────────────────────────────────────────────────────\n"
 
 	for i, r := range a.benchmarkResults {
 		name := r.ModelName
 		if len(name) > 30 {
 			name = name[:27] + "..."
 		}
-		s += fmt.Sprintf("%-4d %-30s %8.1f %8.1f %8.1f %10s\n",
-			i+1, name, r.MQTTokensPerSecond, r.PPTokensPerSecond,
+		s += fmt.Sprintf("%-4d %-30s %10.1f %10.1f %10s\n",
+			i+1, name, r.PPTokensPerSecond,
 			r.SGTTokensPerSecond, r.Timestamp[:10])
 	}
 
