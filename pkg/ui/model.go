@@ -23,6 +23,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// gpuTickMsg is sent every minute to refresh GPU info.
+type gpuTickMsg struct{}
+
+func gpuTickCmd() tea.Cmd {
+	return tea.Tick(1 * time.Minute, func(t time.Time) tea.Msg {
+		return gpuTickMsg{}
+	})
+}
+
 // tickMsg is a simple message for spinning the spinner.
 type tickMsg struct{}
 
@@ -148,7 +157,7 @@ func NewApp(models []model.Model, runner server.ProcessRunner, runningServers []
 
 // Init starts the application.
 func (a *App) Init() tea.Cmd {
-	return nil
+	return gpuTickCmd() // Refresh GPU info every minute
 }
 
 // Update handles all incoming messages.
@@ -410,6 +419,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, cmd
 		}
+	case gpuTickMsg:
+		// Refresh GPU info
+		a.gpuInfo = server.GetGPUInfo()
+		return a, gpuTickCmd()
+
 	case tickMsg:
 		// Tick the spinner during busy states
 		if a.benchmarking || a.downloadBusy {
@@ -595,45 +609,69 @@ func (a *App) View() string {
 // renderSelectionView renders the model selection UI.
 func (a *App) renderSelectionView() string {
 	var s strings.Builder
-	s.WriteString(a.theme.Header.Render("Clauncher - Select a Model"))
+
+	// ASCII Art header
+	banner := `
+  ╔═══════════════════════════════════╗
+  ║   ████████╗███████╗██████╗ ████   ║
+  ║   ╚══██╔══╝██╔════╝██╔══██╗███   ║
+  ║      ██║   █████╗  ██████╔╝██    ║
+  ║      ██║   ██╔══╝  ██╔══██╗██    ║
+  ║      ██║   ███████╗██║  ██║██    ║
+  ║      ╚═╝   ╚══════╝╚═╝  ╚═╝╝╝    ║
+  ╚═══════════════════════════════════╝`
+	s.WriteString(a.theme.Banner.Render(banner))
 	s.WriteString("\n\n")
 
-	// Show GPU info
+	// GPU info panel
 	if a.gpuInfo != "" {
-		s.WriteString(a.theme.Secondary.Render(a.gpuInfo) + "\n\n")
+		gpuPanel := a.theme.Panel.Render(a.theme.PanelTitle.Render("GPU") + "\n" + a.theme.Faint.Render(a.gpuInfo))
+		s.WriteString(gpuPanel)
+		s.WriteString("\n")
 	}
 
-	// Show running servers warning
+	// Running servers warning
 	if len(a.runtimeServers) > 0 {
-		s.WriteString(a.theme.Warning.Render(fmt.Sprintf("⚠ %d llama server(s) already running (PIDs: %v). Press 'k' to kill them.\n\n", len(a.runtimeServers), formatPIDs(a.runtimeServers))))
+		s.WriteString(a.theme.Warning.Render(fmt.Sprintf("  ⚠ %d llama server(s) running (PIDs: %v). Press %s to kill.\n\n",
+			len(a.runtimeServers), formatPIDs(a.runtimeServers), a.theme.Key.Render("k"))))
 	}
 
-	// Show loading indicator if refreshing
+	// Loading indicator
 	if a.refreshing {
-		s.WriteString("Refreshing model list...\n\n")
+		s.WriteString(a.theme.Info.Render("  ↻ Refreshing model list...\n\n"))
 	}
 
-	// Show error if refresh failed
-	if a.err != nil && a.refreshing {
-		s.WriteString(a.theme.Error.Render(fmt.Sprintf("Error refreshing models: %v", a.err)))
-		s.WriteString("\n\n")
-	}
-
-	if len(a.models) == 0 {
-		if !a.refreshing {
-			s.WriteString("No models found. Press 'r' to refresh the model list.\n")
-		}
-	} else {
+	// Models panel
+	if len(a.models) == 0 && !a.refreshing {
+		s.WriteString(a.theme.Faint.Render("  No models found. Press "+a.theme.Key.Render("r")+" to refresh.\n"))
+	} else if len(a.models) > 0 {
+		modelLines := ""
 		for i, m := range a.models {
 			if i == a.cursorPos {
-				s.WriteString(a.theme.Success.Render(fmt.Sprintf("  ➤ %d. %s\n", i+1, m.Name)))
+				modelLines += fmt.Sprintf("  %s %d. %s\n", a.theme.Success.Render("▸"), i+1, m.Name)
 			} else {
-				fmt.Fprintf(&s, "    %d. %s\n", i+1, m.Name)
+				modelLines += fmt.Sprintf("  %s %d. %s\n", a.theme.Faint.Render(" " ), i+1, m.Name)
 			}
 		}
+		modelsPanel := a.theme.Panel.Render(a.theme.PanelTitle.Render("Models") + "\n" + modelLines)
+		s.WriteString(modelsPanel)
 	}
 
-	s.WriteString("\n↑↓: navigate | enter: select | 1-9: quick pick | r: refresh | k: kill servers | d: download | m: benchmarks | q: quit")
+	s.WriteString("\n")
+
+	// Commands panel
+	cmds := ""
+	cmds += fmt.Sprintf("  %s/%s %s | %s %s | %s %s | %s %s | %s %s | %s %s | %s %s\n",
+		a.theme.Key.Render("↑"), a.theme.Key.Render("↓"), "Navigate",
+		a.theme.Key.Render("Enter"), "Select",
+		a.theme.Key.Render("r"), "Refresh",
+		a.theme.Key.Render("k"), "Kill servers",
+		a.theme.Key.Render("d"), "Catalog",
+		a.theme.Key.Render("m"), "Benchmarks",
+		a.theme.Key.Render("q"), "Quit",
+	)
+	cmdsPanel := a.theme.Panel.Render(cmds)
+	s.WriteString(cmdsPanel)
 
 	return s.String()
 }

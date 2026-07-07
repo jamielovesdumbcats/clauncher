@@ -4,7 +4,7 @@
 
 A Go TUI (Terminal User Interface) for launching and managing local LLM inference via **llama.cpp**, and launching AI-powered CLI tools (Claude Code, Opencode, Crush) against those local models.
 
-Built with the [Charmbracelet](https://charm.land) ecosystem: Bubble Tea (TUI framework), Lip Gloss (styling).
+Built with the [Charmbracelet](https://charm.land) ecosystem: Bubble Tea (TUI framework), Lip Gloss, Bubbles, Huh.
 
 ---
 
@@ -35,7 +35,7 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
 ### Control Flow
 
 1. **Startup**: `main.go` calls `server.ListLocalModels()` (runs `llama serve -cl`), creates a `CommandRunner`, passes both to `ui.NewApp()`.
-2. **Selection View**: User picks a model by number → transitions to **Launch Options View**.
+2. **Selection View**: User picks a model → transitions to **Launch Options View**.
 3. **Launch Options**: User picks how to launch (Server, CLI, Claude Code, Opencode, Crush) → `LaunchOptionSelectedMsg` is dispatched.
 4. **Dispatch** (in `App.Update`):
    - `LaunchLlamaServer` → dashboard view + `startProcess()` (managed via CommandRunner)
@@ -64,12 +64,12 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
 
 - `launchLlamaCLI`: tries terminal emulators (gnome-terminal, kitty, alacritty, etc.), falls back to foreground `sh -c`.
 - `launchClaudeCode` / `launchOpencode` / `launchCrush`: all follow the same pattern — start llama server, `time.Sleep(2s)`, write config JSON, launch app.
-- **Config merging is TODO**: if the config file already exists, current code skips merge (`_ = data`). Future work should parse and inject the provider into existing JSON.
+- Config merging is implemented for existing config files.
 - These methods run in a `tea.Cmd` closure — any `exec.Command` errors must return a `messages.ErrorMsg`.
 
 ### Model Discovery
 
-- `ListLocalModels()` runs `llama serve -cl` with a 10s timeout and parses numbered output lines.
+- `ListLocalModels()` runs `llama serve -cl` with a timeout and parses numbered output lines.
 - Model IDs are sanitized (`/` → `-`). Display names strip `-GGUF` suffixes.
 - The full HF path with quant (e.g., `mradermacher/gemma-4-26B-A4B-it-GGUF:IQ4_XS`) is stored in `Config["model_name"]`.
 
@@ -85,37 +85,61 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
 
 ---
 
-## Launch Config Details (from CLAUDE.md)
+## Launch Config Details
 
 ### Claude Code
+- Start llama server with model, port, context size, flash-attn.
 - Set `ANTHROPIC_BASE_URL=https://localhost:<port>` and run `claude --model my-model`.
-- Add `"CLAUDE_CODE_ATTRIBUTION_HEADER": "0"` to `~/.claude/settings.json` for KV cache performance.
+- Auto-setup `~/.claude/settings.json` with `"CLAUDE_CODE_ATTRIBUTION_HEADER": "0"` for KV cache performance.
 
 ### Opencode
 - Config: `~/.config/opencode/opencode.json`. Provider key: `"llama-cpp"` under `"provider"`.
 - Base URL format: `http://localhost:<port>/v1`.
+- If config exists, merge the provider into existing JSON.
+- Ask user which working directory to launch in.
 
 ### Crush
 - Config: `~/.config/crush/crush.json`. Provider key: `"llama-cpp"` under `"providers"`.
 - Base URL format: `http://localhost:<port>/v1/` (trailing slash matters).
-- Crush requires context >= 4096 — warn user if model context is smaller.
+- If config exists, merge the provider into existing JSON.
+- Crush requires context >= 4096 — warn user if model context is smaller, offer to change.
+- Ask user which working directory to launch in.
+
+---
+
+## Implemented Features
+
+- [x] Arrow key navigation for model and option selection
+- [x] Configurable port and context length via UI
+- [x] Find and kill existing llama processes before starting new ones
+- [x] Merge existing app configs (Opencode, Crush) instead of skipping
+- [x] Ask which working directory to launch Claude/opencode/crush in
+- [x] Context length warnings for Crush/opencode (< 4096) with option to change
+- [x] Pre-configured model list for downloads (stored in repo)
+- [x] Model benchmarking
+- [x] Auto-setup `~/.claude/settings.json` for local usage (needs testing)
 
 ---
 
 ## Feature Backlog
 
-See `CLAUDE.md` → "New Features" for the tracked checklist. Highlights:
+### Needs Work
+- [ ] Fix model downloads — currently failing, suspected timeout issue
+- [ ] Move launchable models into a config file — starts empty, refreshes on load, offers download if no models cached (partially done)
+- [ ] GPU usage display — partially implemented but needs to display stats on TUI pages while model is running
 
-- [ ] Ask which working directory to launch Claude/opencode/crush in
-- [ ] Auto-setup `~/.claude/settings.json` for local usage
-- [ ] Find and kill existing llama processes before starting new ones
-- [ ] Configurable port and context length via UI
-- [ ] Context length warnings for Crush/opencode (< 4096)
-- [ ] Merge existing app configs (Opencode, Crush) instead of skipping
-- [ ] GPU usage display
-- [ ] Model benchmarking
-- [ ] HuggingFace model discovery
+### TODO
+- [ ] HuggingFace model discovery — check for new models, list in TUI, offer to pull (lower priority)
+- [ ] UI enhancements — much more needed to improve look using Charm libraries (partially done)
+
+### Future
 - [ ] Ollama as alternative backend
+
+---
+
+## Known Issues & Debugging
+
+- **Environment**: If running in a restricted shell, the TUI may fail with `could not open a new TTY`. Use the `MockRunner` for UI development.
 
 ---
 
@@ -123,4 +147,6 @@ See `CLAUDE.md` → "New Features" for the tracked checklist. Highlights:
 
 - `github.com/charmbracelet/bubbletea` — TUI framework
 - `github.com/charmbracelet/lipgloss` — terminal styling
+- `github.com/charmbracelet/bubbles` — reusable TUI components
+- `github.com/charmbracelet/huh` — form/input components
 - No external HTTP libraries, databases, or config parsers yet (all config is raw `os.ReadFile` + `json.MarshalIndent`).
