@@ -19,8 +19,19 @@ import (
 	"clauncher/pkg/ui/theme"
 
 	textinput "github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// tickMsg is a simple message for spinning the spinner.
+type tickMsg struct{}
+
+// tickSpinner returns a command that ticks the spinner.
+func tickSpinner() tea.Cmd {
+	return func() tea.Msg {
+		return tickMsg{}
+	}
+}
 
 type ViewState int
 
@@ -30,6 +41,7 @@ const (
 	ViewLaunchOptions
 	ViewBenchmark
 	ViewLaunchConfig
+	ViewCatalog
 )
 
 // App is the root model for the application.
@@ -54,6 +66,18 @@ type App struct {
 	// Pending model selected, waiting for launch option
 	pendingModel *model.Model
 
+	// Cursor positions for arrow-key navigation
+	cursorPos int // model or option index in selection/launch views
+
+	// Catalog state
+	catalog        []server.CatalogModel
+	catalogCursor  int
+	downloading    string
+	downloadBusy   bool
+
+	// Running llama server detection
+	runtimeServers []server.RunningLlamaProcess
+
 	// Benchmark state
 	benchmarkStore     *model.BenchmarkStore
 	benchmarkResults   []model.BenchmarkResult
@@ -71,13 +95,22 @@ type App struct {
 	focusedInput   int // 0=port, 1=ctx, 2=dir
 	pendingLaunch  model.LaunchOption
 	ctxSizeWarning string
+
+	// GPU info
+	gpuInfo string
+
+	// Spinner for busy states
+	spin spinner.Model
 }
 
 // NewApp initializes a new application instance.
-func NewApp(models []model.Model, runner server.ProcessRunner) *App {
+func NewApp(models []model.Model, runner server.ProcessRunner, runningServers []server.RunningLlamaProcess, catalog []server.CatalogModel) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 	store := model.NewBenchmarkStore("")
 	results, _ := store.Load()
+
+	spin := spinner.New()
+	spin.Spinner = spinner.Dot
 
 	portInput := textinput.New()
 	portInput.Placeholder = "8081"
@@ -106,6 +139,10 @@ func NewApp(models []model.Model, runner server.ProcessRunner) *App {
 		ctxSizeInput:     ctxSizeInput,
 		workDirInput:     workDirInput,
 		focusedInput:     0,
+		runtimeServers:   runningServers,
+		gpuInfo:          server.GetGPUInfo(),
+		catalog:          catalog,
+		spin:             spin,
 	}
 }
 
@@ -133,7 +170,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "b", "esc":
 			// Go back to selection from dashboard or benchmark view
-			if a.currentView == ViewDashboard || a.currentView == ViewLaunchOptions || a.currentView == ViewBenchmark || a.currentView == ViewLaunchConfig {
+			if a.currentView == ViewDashboard || a.currentView == ViewLaunchOptions || a.currentView == ViewBenchmark || a.currentView == ViewLaunchConfig || a.currentView == ViewCatalog {
 				return a, a.goBack()
 			}
 		case "m":
@@ -145,7 +182,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.currentView == ViewBenchmark && a.pendingModel != nil && !a.benchmarking {
 				a.benchmarking = true
 				a.benchmarkModelName = a.pendingModel.Name
-				return a, a.runBenchmark(*a.pendingModel)
+				return a, tea.Batch(a.runBenchmark(*a.pendingModel), tickSpinner())
+			}
+		case "d":
+			// Navigate to catalog to download models
+			if a.currentView == ViewSelection {
+				a.currentView = ViewCatalog
+				return a, nil
 			}
 		case "c":
 			// Clear benchmark results
@@ -160,6 +203,17 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			// Refresh local models list
 			if a.currentView == ViewSelection && !a.refreshing {
+				return a, a.refreshModels()
+			}
+		case "k":
+			// Kill running llama servers
+			if a.currentView == ViewSelection {
+				if err := server.KillLlamaServers(); err != nil {
+					a.err = fmt.Errorf("failed to kill servers: %w", err)
+					return a, nil
+				}
+				a.runtimeServers = nil
+				a.err = nil
 				return a, a.refreshModels()
 			}
 		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
@@ -212,6 +266,68 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+		case "up":
+			// Navigate up in selection or launch options views
+			if a.currentView == ViewSelection && a.cursorPos > 0 {
+				a.cursorPos--
+			} else if a.currentView == ViewLaunchOptions && a.cursorPos > 0 {
+				a.cursorPos--
+			} else if a.currentView == ViewCatalog && a.catalogCursor > 0 {
+				a.catalogCursor--
+			}
+			return a, nil
+		case "down":
+			// Navigate down in selection or launch options views
+			if a.currentView == ViewSelection && a.cursorPos < len(a.models)-1 {
+				a.cursorPos++
+			} else if a.currentView == ViewLaunchOptions && a.cursorPos < 5 {
+				a.cursorPos++
+			} else if a.currentView == ViewCatalog && a.catalogCursor < len(a.catalog)-1 {
+				a.catalogCursor++
+			}
+			return a, nil
+		case "enter":
+			// Confirm selection with enter key
+			if a.currentView == ViewSelection && a.cursorPos < len(a.models) {
+				return a, a.selectModel(a.cursorPos)
+			}
+			if a.currentView == ViewLaunchOptions {
+				switch a.cursorPos {
+				case 0: // Llama Server
+					a.selectedModel = a.pendingModel
+					a.currentView = ViewDashboard
+					a.logs = []string{}
+					return a, a.startProcess(*a.pendingModel)
+				case 1: // Llama CLI
+					return a, a.launchLlamaCLI(*a.pendingModel)
+				case 2: // Claude Code
+					return a, a.launchClaudeCodeWithConfig(*a.pendingModel, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value())
+				case 3: // Opencode
+					return a, a.launchOpencodeWithConfig(*a.pendingModel, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value())
+				case 4: // Crush
+					return a, a.launchCrushWithConfig(*a.pendingModel, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value())
+				case 5: // Benchmark
+					a.currentView = ViewBenchmark
+					a.benchmarking = true
+					a.benchmarkModelName = a.pendingModel.Name
+					return a, a.runBenchmark(*a.pendingModel)
+				}
+			}
+			if a.currentView == ViewCatalog && a.catalogCursor < len(a.catalog) {
+				m := a.catalog[a.catalogCursor]
+				a.downloading = m.DisplayName
+				a.downloadBusy = true
+				return a, tea.Batch(
+					func() tea.Msg {
+						ctx, cancel := context.WithTimeout(a.ctx, 10*time.Minute)
+						defer cancel()
+						err := server.DownloadModel(ctx, m.HFRepo)
+						return messages.DownloadCompleteMsg{Model: m.DisplayName, Error: err}
+					},
+					tickSpinner(),
+				)
+			}
+			return a, nil
 		}
 
 		// Handle text input in launch config view
@@ -294,6 +410,17 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, cmd
 		}
+	case tickMsg:
+		// Tick the spinner during busy states
+		if a.benchmarking || a.downloadBusy {
+			var cmd tea.Cmd
+			a.spin, cmd = a.spin.Update(tickMsg{})
+			if cmd != nil {
+				return a, cmd
+			}
+		}
+		return a, nil
+
 	case messages.LogMsg:
 		a.logs = append(a.logs, m.Line)
 		// Keep log buffer reasonable
@@ -373,6 +500,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.benchmarkResults = append(a.benchmarkResults, *m.Result)
 		}
 		return a, nil
+
+	case messages.DownloadCompleteMsg:
+		a.downloadBusy = false
+		if m.Error != nil {
+			a.err = fmt.Errorf("download failed: %w", m.Error)
+			return a, nil
+		}
+		a.downloading = ""
+		// Refresh model list after download
+		return a, a.refreshModels()
 	}
 
 	return a, nil
@@ -414,7 +551,7 @@ func (a *App) goBack() tea.Cmd {
 	} else if a.currentView == ViewDashboard {
 		a.currentView = ViewSelection
 		a.selectedModel = nil
-	} else if a.currentView == ViewBenchmark {
+	} else if a.currentView == ViewBenchmark || a.currentView == ViewCatalog {
 		a.currentView = ViewSelection
 	}
 	a.err = nil // Clear any error state when returning to selection
@@ -448,6 +585,8 @@ func (a *App) View() string {
 		return a.renderBenchmarkView()
 	case ViewLaunchConfig:
 		return a.renderLaunchConfigView()
+	case ViewCatalog:
+		return a.renderCatalogView()
 	default:
 		return "Unknown View"
 	}
@@ -458,6 +597,16 @@ func (a *App) renderSelectionView() string {
 	var s strings.Builder
 	s.WriteString(a.theme.Header.Render("Clauncher - Select a Model"))
 	s.WriteString("\n\n")
+
+	// Show GPU info
+	if a.gpuInfo != "" {
+		s.WriteString(a.theme.Secondary.Render(a.gpuInfo) + "\n\n")
+	}
+
+	// Show running servers warning
+	if len(a.runtimeServers) > 0 {
+		s.WriteString(a.theme.Warning.Render(fmt.Sprintf("⚠ %d llama server(s) already running (PIDs: %v). Press 'k' to kill them.\n\n", len(a.runtimeServers), formatPIDs(a.runtimeServers))))
+	}
 
 	// Show loading indicator if refreshing
 	if a.refreshing {
@@ -476,30 +625,55 @@ func (a *App) renderSelectionView() string {
 		}
 	} else {
 		for i, m := range a.models {
-			fmt.Fprintf(&s, "  %d. %s\n", i+1, m.Name)
+			if i == a.cursorPos {
+				s.WriteString(a.theme.Success.Render(fmt.Sprintf("  ➤ %d. %s\n", i+1, m.Name)))
+			} else {
+				fmt.Fprintf(&s, "    %d. %s\n", i+1, m.Name)
+			}
 		}
 	}
 
-	s.WriteString("\nPress 1 to select the first model")
-	if len(a.models) > 1 {
-		s.WriteString(", 2-N for other models")
-	}
-	s.WriteString(", r to refresh, m for benchmarks, q to quit")
+	s.WriteString("\n↑↓: navigate | enter: select | 1-9: quick pick | r: refresh | k: kill servers | d: download | m: benchmarks | q: quit")
 
 	return s.String()
+}
+
+func formatPIDs(procs []server.RunningLlamaProcess) string {
+	var parts []string
+	for _, p := range procs {
+		parts = append(parts, fmt.Sprint(p.PID))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // renderLaunchOptionsView renders the launch options UI.
 func (a *App) renderLaunchOptionsView() string {
 	s := a.theme.Header.Render("Launch Options") + "\n\n"
 	s += a.theme.Primary.Render(fmt.Sprintf("Model: %s\n\n", a.pendingModel.Name))
-	s += "  1. " + a.theme.Success.Render("Launch Llama Server") + " (open in browser)\n"
-	s += "  2. " + a.theme.Secondary.Render("Launch Llama CLI") + " (new terminal)\n"
-	s += "  3. " + a.theme.Info.Render("Launch Claude Code") + " (with local model)\n"
-	s += "  4. " + a.theme.Info.Render("Launch Opencode") + " (with local model)\n"
-	s += "  5. " + a.theme.Info.Render("Launch Crush") + " (with local model)\n"
-	s += "  6. " + a.theme.Info.Render("Run Benchmark") + " (for this model)\n"
-	s += "\nPress 1-6 to select, b to go back"
+
+	options := []struct {
+		label  string
+		style  func(strs ...string) string
+		desc   string
+	}{
+		{"Launch Llama Server", a.theme.Success.Render, "open in browser"},
+		{"Launch Llama CLI", a.theme.Secondary.Render, "new terminal"},
+		{"Launch Claude Code", a.theme.Info.Render, "with local model"},
+		{"Launch Opencode", a.theme.Info.Render, "with local model"},
+		{"Launch Crush", a.theme.Info.Render, "with local model"},
+		{"Run Benchmark", a.theme.Info.Render, "for this model"},
+	}
+
+	for i, opt := range options {
+		prefix := "  "
+		if i == a.cursorPos {
+			prefix = a.theme.Success.Render("  ➤")
+		} else {
+			prefix = "    "
+		}
+		s += fmt.Sprintf("%s %s (%s)\n", prefix, opt.style(opt.label), opt.desc)
+	}
+	s += "\n↑↓: navigate | enter: launch | 1-6: quick pick | b: back"
 	return s
 }
 
@@ -554,6 +728,7 @@ func (a *App) renderDashboardView() string {
 // selectModel handles the transition from selection to launch options
 func (a *App) selectModel(idx int) tea.Cmd {
 	a.pendingModel = &a.models[idx]
+	a.cursorPos = 0
 	a.currentView = ViewLaunchOptions
 	return nil
 }
@@ -876,7 +1051,7 @@ func (a *App) renderBenchmarkView() string {
 	s := a.theme.Header.Render("Benchmark Results") + "\n\n"
 
 	if a.benchmarking {
-		s += fmt.Sprintf("Running benchmark for %s...\n\n", a.benchmarkModelName)
+		s += fmt.Sprintf("%s Running benchmark for %s...\n\n", a.spin.View(), a.benchmarkModelName)
 		s += "This may take a while.\n"
 		s += "\nPress 'b' to go back"
 		return s
@@ -905,6 +1080,37 @@ func (a *App) renderBenchmarkView() string {
 
 	s += "\nb: go back | c: clear"
 	return s
+}
+
+// renderCatalogView renders the model download catalog.
+func (a *App) renderCatalogView() string {
+	var s strings.Builder
+	s.WriteString(a.theme.Header.Render("Model Catalog"))
+	s.WriteString("\n\n")
+
+	if a.downloadBusy {
+		s.WriteString(a.theme.Warning.Render(fmt.Sprintf("%s Downloading %s... Press 'b' to cancel", a.spin.View(), a.downloading)))
+		return s.String()
+	}
+
+	if len(a.catalog) == 0 {
+		s.WriteString("No models in catalog.\n")
+		s.WriteString("\nb: go back")
+		return s.String()
+	}
+
+	for i, m := range a.catalog {
+		if i == a.catalogCursor {
+			s.WriteString(a.theme.Success.Render(fmt.Sprintf("  ➤ %s (%.1f GB)\n", m.DisplayName, m.SizeGB)))
+			tags := strings.Join(m.Tags, ", ")
+			s.WriteString(fmt.Sprintf("      Tags: %s\n", tags))
+		} else {
+			s.WriteString(fmt.Sprintf("    %s (%.1f GB)\n", m.DisplayName, m.SizeGB))
+		}
+	}
+
+	s.WriteString("\n↑↓: navigate | enter: download | b: go back")
+	return s.String()
 }
 
 // renderLaunchConfigView renders the launch configuration UI (port, context size, working dir).

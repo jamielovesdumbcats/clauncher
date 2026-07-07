@@ -56,3 +56,9 @@ type BenchmarkCompleteMsg struct {
 	Result *model.BenchmarkResult
 	Error  error
 }
+
+// DownloadCompleteMsg is sent when a model download finishes.
+type DownloadCompleteMsg struct {
+	Model string
+	Error error
+}

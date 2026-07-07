@@ -3,9 +3,12 @@ package server
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,9 +19,9 @@ import (
 
 // ProcessInfo holds metadata about a running or recently terminated process.
 type ProcessInfo struct {
-	Status  model.ProcessStatus
-	Logs    []string
-	Error   error
+	Status model.ProcessStatus
+	Logs   []string
+	Error  error
 }
 
 // ProcessRunner defines the interface for managing external command lifecycles.
@@ -407,3 +410,89 @@ func (r *MockRunner) ClearError() {
 	r.err = nil
 }
 
+// CatalogModel represents a model available for download from HuggingFace.
+type CatalogModel struct {
+	HFRepo      string   `json:"hf_repo"`
+	DisplayName string   `json:"display_name"`
+	SizeGB      float64  `json:"size_gb"`
+	Tags        []string `json:"tags"`
+}
+
+// Catalog holds a list of recommended models.
+type Catalog struct {
+	Models []CatalogModel `json:"models"`
+}
+
+// LoadCatalog reads the model catalog from the embedded data file.
+func LoadCatalog() ([]CatalogModel, error) {
+	// Try loading from executable directory or from repo
+	paths := []string{
+		"data/models.json",
+		"~/.clauncher/models.json",
+	}
+	for _, p := range paths {
+		if p == "~/.clauncher/models.json" {
+			home, _ := os.UserHomeDir()
+			p = filepath.Join(home, ".clauncher", "models.json")
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var cat Catalog
+		if err := json.Unmarshal(data, &cat); err != nil {
+			continue
+		}
+		return cat.Models, nil
+	}
+	return nil, fmt.Errorf("no model catalog found")
+}
+
+// DownloadModel downloads a model from HuggingFace using llama.
+func DownloadModel(ctx context.Context, hfRepo string) error {
+	if _, err := exec.LookPath("llama"); err != nil {
+		return fmt.Errorf("llama not found in PATH — install llama.cpp to download models")
+	}
+	cmd := exec.CommandContext(ctx, "llama", "download", "-hf", hfRepo)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("download failed: %w (output: %s)", err, output)
+	}
+	return nil
+}
+func GetGPUInfo() string {
+	// Try ROCm (AMD) first
+	if _, err := exec.LookPath("rocm-smi"); err == nil {
+		cmd := exec.Command("rocm-smi", "--showtemp", "--showpower", "--json")
+		if output, err := cmd.Output(); err == nil {
+			if lines := strings.Split(strings.TrimSpace(string(output)), "\n"); len(lines) > 0 {
+				return "AMD ROCm: " + strings.TrimSpace(lines[0])
+			}
+		}
+	}
+
+	// Try NVIDIA
+	if _, err := exec.LookPath("nvidia-smi"); err == nil {
+		cmd := exec.Command("nvidia-smi", "--query-gpu=name,memory.used,memory.total,temperature.gpu,utilization.gpu", "--format=csv,noheader,nounits")
+		if output, err := cmd.Output(); err == nil {
+			if lines := strings.Split(strings.TrimSpace(string(output)), "\n"); len(lines) > 0 {
+				return "NVIDIA: " + strings.TrimSpace(lines[0])
+			}
+		}
+	}
+
+	// Try Vulkan info via llama --version
+	if _, err := exec.LookPath("llama"); err == nil {
+		cmd := exec.Command("llama", "--version")
+		if output, err := cmd.Output(); err == nil {
+			for _, line := range strings.Split(string(output), "\n") {
+				lower := strings.ToLower(line)
+				if strings.Contains(lower, "vulkan") || strings.Contains(lower, "gpu") {
+					return strings.TrimSpace(line)
+				}
+			}
+		}
+	}
+
+	return "GPU: not detected"
+}

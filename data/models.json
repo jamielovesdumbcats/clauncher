@@ -1,0 +1,40 @@
+{
+  "models": [
+    {
+      "hf_repo": "mradermacher/Qwen3-8B-GGUF:q4_k_m",
+      "display_name": "Qwen3 8B (Q4_K_M)",
+      "size_gb": 4.8,
+      "tags": ["code", "general"]
+    },
+    {
+      "hf_repo": "mradermacher/gemma-4-26B-A4B-it-GGUF:IQ4_XS",
+      "display_name": "Gemma 4 26B.A4B (IQ4_XS)",
+      "size_gb": 13.1,
+      "tags": ["general"]
+    },
+    {
+      "hf_repo": "bartowski/Llama-3.3-70B-Instruct-Q4_K_M-GGUF:Q4_K_M",
+      "display_name": "Llama 3.3 70B (Q4_K_M)",
+      "size_gb": 45.0,
+      "tags": ["general", "large"]
+    },
+    {
+      "hf_repo": "mradermacher/Llama-3.1-8B-Instruct-GGUF:Q4_K_M",
+      "display_name": "Llama 3.1 8B (Q4_K_M)",
+      "size_gb": 5.4,
+      "tags": ["general"]
+    },
+    {
+      "hf_repo": "mradermacher/Mistral-Small-24B-Instruct-2501-GGUF:Q4_K_M",
+      "display_name": "Mistral Small 24B (Q4_K_M)",
+      "size_gb": 15.2,
+      "tags": ["general"]
+    },
+    {
+      "hf_repo": "mradermacher/Phi-4-GGUF:Q4_K_M",
+      "display_name": "Phi 4 (Q4_K_M)",
+      "size_gb": 8.5,
+      "tags": ["general"]
+    }
+  ]
+}
