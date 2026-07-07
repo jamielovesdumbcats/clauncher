@@ -764,7 +764,8 @@ func (a *App) renderSelectionView() string {
 
 	// Models panel
 	if len(a.models) == 0 && !a.refreshing {
-		s.WriteString(a.theme.Faint.Render("  No models found. Press " + a.theme.Key.Render("r") + " to refresh.\n"))
+		s.WriteString(a.theme.Faint.Render("  No local models found.\n"))
+		s.WriteString(a.theme.Faint.Render("  Press " + a.theme.Key.Render("d") + " to browse catalog and download models.\n"))
 	} else if len(a.models) > 0 {
 		modelLines := ""
 		for i, m := range a.models {
@@ -1252,21 +1253,32 @@ func (a *App) renderCatalogView() string {
 	}
 
 	if len(a.catalog) == 0 {
-		s.WriteString("No models in catalog.\n")
+		s.WriteString(a.theme.Faint.Render("  No models in catalog.\n"))
 		s.WriteString("\nb: go back")
 		return s.String()
 	}
 
+	catalogLines := ""
 	for i, m := range a.catalog {
+		downloaded := server.IsModelDownloaded(m.HFRepo)
+		status := a.theme.Faint.Render("○")
+		if downloaded {
+			status = a.theme.Success.Render("●")
+		}
 		if i == a.catalogCursor {
-			s.WriteString(a.theme.Success.Render(fmt.Sprintf("  ➤ %s (%.1f GB)\n", m.DisplayName, m.SizeGB)))
-			tags := strings.Join(m.Tags, ", ")
-			s.WriteString(fmt.Sprintf("      Tags: %s\n", tags))
+			prefix := a.theme.Success.Render("▸")
+			catalogLines += fmt.Sprintf("  %s %s %s (%.1f GB)\n", prefix, status, m.DisplayName, m.SizeGB)
+			if !downloaded {
+				tags := strings.Join(m.Tags, ", ")
+				catalogLines += fmt.Sprintf("      Tags: %s\n", tags)
+			}
 		} else {
-			s.WriteString(fmt.Sprintf("    %s (%.1f GB)\n", m.DisplayName, m.SizeGB))
+			prefix := a.theme.Faint.Render(" ")
+			catalogLines += fmt.Sprintf("  %s %s %s (%.1f GB)\n", prefix, status, m.DisplayName, m.SizeGB)
 		}
 	}
 
+	s.WriteString(a.theme.Panel.Render(a.theme.PanelTitle.Render("Catalog") + "\n" + catalogLines))
 	s.WriteString("\n↑↓: navigate | enter: download | b: go back")
 	return s.String()
 }

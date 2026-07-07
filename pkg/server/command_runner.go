@@ -443,29 +443,53 @@ type Catalog struct {
 	Models []CatalogModel `json:"models"`
 }
 
-// LoadCatalog reads the model catalog from the embedded data file.
+// CatalogConfigDir returns the config directory for clauncher.
+func CatalogConfigDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".clauncher"), nil
+}
+
+// LoadCatalog reads the model catalog from ~/.clauncher/models.json.
+// If the config doesn't exist, seeds it from the bundled data/models.json.
 func LoadCatalog() ([]CatalogModel, error) {
-	// Try loading from executable directory or from repo
-	paths := []string{
-		"data/models.json",
-		"~/.clauncher/models.json",
+	configDir, err := CatalogConfigDir()
+	if err != nil {
+		return nil, err
 	}
-	for _, p := range paths {
-		if p == "~/.clauncher/models.json" {
-			home, _ := os.UserHomeDir()
-			p = filepath.Join(home, ".clauncher", "models.json")
-		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
+	configPath := filepath.Join(configDir, "models.json")
+
+	// Try loading user config
+	data, err := os.ReadFile(configPath)
+	if err == nil {
 		var cat Catalog
-		if err := json.Unmarshal(data, &cat); err != nil {
-			continue
+		if err := json.Unmarshal(data, &cat); err == nil {
+			return cat.Models, nil
 		}
-		return cat.Models, nil
 	}
-	return nil, fmt.Errorf("no model catalog found")
+
+	// Seed from bundled catalog
+	bundledPath := "data/models.json"
+	data, err = os.ReadFile(bundledPath)
+	if err != nil {
+		return nil, fmt.Errorf("no model catalog found")
+	}
+
+	// Create config dir and seed the file
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create config directory: %w", err)
+	}
+	if err := os.WriteFile(configPath, data, 0o644); err != nil {
+		return nil, fmt.Errorf("failed to write config: %w", err)
+	}
+
+	var cat Catalog
+	if err := json.Unmarshal(data, &cat); err != nil {
+		return nil, fmt.Errorf("failed to parse catalog: %w", err)
+	}
+	return cat.Models, nil
 }
 
 // IsModelDownloaded checks if the HF repo already has blob files in the cache.

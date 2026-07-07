@@ -109,6 +109,8 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
 
 ## Implemented Features
 
+- [x] Model catalog in user config (`~/.clauncher/models.json`)
+- [x] Catalog download status indicators (✓/✗)
 - [x] Arrow key navigation for model and option selection
 - [x] Configurable port and context length via UI
 - [x] Find and kill existing llama processes before starting new ones
@@ -123,10 +125,6 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
 
 ## Feature Backlog
 
-### Needs Work
-- [ ] Fix model downloads — currently failing, suspected timeout issue
-- [ ] Move launchable models into a config file — starts empty, refreshes on load, offers download if no models cached (partially done)
-- [ ] GPU usage display — partially implemented but needs to display stats on TUI pages while model is running
 
 ### TODO
 - [ ] HuggingFace model discovery — check for new models, list in TUI, offer to pull (lower priority)
