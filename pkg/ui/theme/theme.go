@@ -18,6 +18,7 @@ type Theme struct {
 	Faint      lipgloss.Style
 	Panel      lipgloss.Style
 	PanelTitle lipgloss.Style
+	GPUPanel   lipgloss.Style
 	Command    lipgloss.Style
 	Key        lipgloss.Style
 	Banner     lipgloss.Style
@@ -42,6 +43,12 @@ func NewTheme() *Theme {
 			Padding(0, 1).
 			MarginTop(1),
 		PanelTitle: lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true).PaddingLeft(1),
+		GPUPanel: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("13")).
+			Padding(0, 1).
+			MarginTop(1).
+			Width(30),
 		Command:    lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true),
 		Key:        lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true),
 		Banner:     lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true),

@@ -23,11 +23,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// gpuTickMsg is sent every minute to refresh GPU info.
+// gpuTickMsg is sent every 2s to refresh GPU stats.
 type gpuTickMsg struct{}
 
 func gpuTickCmd() tea.Cmd {
-	return tea.Tick(1 * time.Minute, func(t time.Time) tea.Msg {
+	return tea.Tick(2 * time.Second, func(t time.Time) tea.Msg {
 		return gpuTickMsg{}
 	})
 }
@@ -106,7 +106,7 @@ type App struct {
 	ctxSizeWarning string
 
 	// GPU info
-	gpuInfo string
+	gpuStats server.GPUStats
 
 	// Spinner for busy states
 	spin spinner.Model
@@ -149,7 +149,7 @@ func NewApp(models []model.Model, runner server.ProcessRunner, runningServers []
 		workDirInput:     workDirInput,
 		focusedInput:     0,
 		runtimeServers:   runningServers,
-		gpuInfo:          server.GetGPUInfo(),
+		gpuStats:         server.GetGPUStats(),
 		catalog:          catalog,
 		spin:             spin,
 	}
@@ -308,13 +308,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.logs = []string{}
 					return a, a.startProcess(*a.pendingModel)
 				case 1: // Llama CLI
-					return a, a.launchLlamaCLI(*a.pendingModel)
+					return a, tea.Batch(a.launchLlamaCLI(*a.pendingModel), func() tea.Msg { return tea.ClearScreen() })
 				case 2: // Claude Code
-					return a, a.launchClaudeCodeWithConfig(*a.pendingModel, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value())
+					return a, tea.Batch(a.launchClaudeCodeWithConfig(*a.pendingModel, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value()), func() tea.Msg { return tea.ClearScreen() })
 				case 3: // Opencode
-					return a, a.launchOpencodeWithConfig(*a.pendingModel, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value())
+					return a, tea.Batch(a.launchOpencodeWithConfig(*a.pendingModel, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value()), func() tea.Msg { return tea.ClearScreen() })
 				case 4: // Crush
-					return a, a.launchCrushWithConfig(*a.pendingModel, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value())
+					return a, tea.Batch(a.launchCrushWithConfig(*a.pendingModel, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value()), func() tea.Msg { return tea.ClearScreen() })
 				case 5: // Benchmark
 					a.currentView = ViewBenchmark
 					a.benchmarking = true
@@ -324,11 +324,19 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if a.currentView == ViewCatalog && a.catalogCursor < len(a.catalog) {
 				m := a.catalog[a.catalogCursor]
+				if server.IsModelDownloaded(m.HFRepo) {
+					a.err = fmt.Errorf("%s is already downloaded", m.DisplayName)
+					return a, nil
+				}
 				a.downloading = m.DisplayName
 				a.downloadBusy = true
 				return a, tea.Batch(
 					func() tea.Msg {
-						ctx, cancel := context.WithTimeout(a.ctx, 10*time.Minute)
+						timeout := 30 * time.Minute
+						if m.SizeGB > 30 {
+							timeout = 60 * time.Minute
+						}
+						ctx, cancel := context.WithTimeout(a.ctx, timeout)
 						defer cancel()
 						err := server.DownloadModel(ctx, m.HFRepo)
 						return messages.DownloadCompleteMsg{Model: m.DisplayName, Error: err}
@@ -420,8 +428,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 	case gpuTickMsg:
-		// Refresh GPU info
-		a.gpuInfo = server.GetGPUInfo()
+		a.gpuStats = server.GetGPUStats()
 		return a, gpuTickCmd()
 
 	case tickMsg:
@@ -490,16 +497,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.startProcess(m.Model)
 		case model.LaunchLlamaCLI:
 			// Launch CLI in new terminal
-			return a, a.launchLlamaCLI(m.Model)
+			return a, tea.Batch(a.launchLlamaCLI(m.Model), func() tea.Msg { return tea.ClearScreen() })
 		case model.LaunchClaudeCode:
 			// Launch Claude Code with local model using config
-			return a, a.launchClaudeCodeWithConfig(m.Model, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value())
+			return a, tea.Batch(a.launchClaudeCodeWithConfig(m.Model, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value()), func() tea.Msg { return tea.ClearScreen() })
 		case model.LaunchOpencode:
 			// Launch Opencode with local model using config
-			return a, a.launchOpencodeWithConfig(m.Model, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value())
+			return a, tea.Batch(a.launchOpencodeWithConfig(m.Model, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value()), func() tea.Msg { return tea.ClearScreen() })
 		case model.LaunchCrush:
 			// Launch Crush with local model using config
-			return a, a.launchCrushWithConfig(m.Model, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value())
+			return a, tea.Batch(a.launchCrushWithConfig(m.Model, a.portInput.Value(), a.ctxSizeInput.Value(), a.workDirInput.Value()), func() tea.Msg { return tea.ClearScreen() })
 		}
 		return a, nil
 
@@ -606,6 +613,44 @@ func (a *App) View() string {
 	}
 }
 
+// renderGPUStats renders the GPU stats panel. Returns empty string if no GPU detected.
+func renderGPUStats(a *App) string {
+	if a.gpuStats.UsageText == "" && a.gpuStats.Temperature == 0 {
+		return ""
+	}
+
+	if a.gpuStats.UsageText != "" {
+		return a.theme.GPUPanel.Render(a.theme.PanelTitle.Render("GPU Stats") + "\n" + a.theme.Faint.Render(a.gpuStats.UsageText))
+	}
+
+	// Fixed-width values: 5 chars max (e.g., "  99°C", " 100%")
+	tempVal := fmt.Sprintf("%4.0f°C", a.gpuStats.Temperature)
+	compVal := fmt.Sprintf("%4.0f%%", a.gpuStats.GPUUsage)
+	memVal := fmt.Sprintf("%4.0f%%", a.gpuStats.MemoryUsage)
+
+	// Color code utilization
+	compStyle := a.theme.Faint
+	if a.gpuStats.GPUUsage > 80 {
+		compStyle = a.theme.Warning
+	} else if a.gpuStats.GPUUsage > 40 {
+		compStyle = a.theme.Info
+	}
+
+	memStyle := a.theme.Faint
+	if a.gpuStats.MemoryUsage > 85 {
+		memStyle = a.theme.Warning
+	} else if a.gpuStats.MemoryUsage > 50 {
+		memStyle = a.theme.Info
+	}
+
+	stats := fmt.Sprintf("  Temp:    %s\n  Compute: %s\n  VRAM:    %s",
+		a.theme.Faint.Render(tempVal),
+		compStyle.Render(compVal),
+		memStyle.Render(memVal))
+
+	return a.theme.GPUPanel.Render(a.theme.PanelTitle.Render("GPU Stats") + "\n" + stats) + "\n"
+}
+
 // renderSelectionView renders the model selection UI.
 func (a *App) renderSelectionView() string {
 	var s strings.Builder
@@ -623,12 +668,8 @@ func (a *App) renderSelectionView() string {
 	s.WriteString(a.theme.Banner.Render(banner))
 	s.WriteString("\n\n")
 
-	// GPU info panel
-	if a.gpuInfo != "" {
-		gpuPanel := a.theme.Panel.Render(a.theme.PanelTitle.Render("GPU") + "\n" + a.theme.Faint.Render(a.gpuInfo))
-		s.WriteString(gpuPanel)
-		s.WriteString("\n")
-	}
+	// GPU stats panel
+	s.WriteString(renderGPUStats(a))
 
 	// Running servers warning
 	if len(a.runtimeServers) > 0 {
@@ -688,6 +729,7 @@ func formatPIDs(procs []server.RunningLlamaProcess) string {
 func (a *App) renderLaunchOptionsView() string {
 	s := a.theme.Header.Render("Launch Options") + "\n\n"
 	s += a.theme.Primary.Render(fmt.Sprintf("Model: %s\n\n", a.pendingModel.Name))
+	s += renderGPUStats(a) + "\n"
 
 	options := []struct {
 		label  string
@@ -735,6 +777,9 @@ func (a *App) renderDashboardView() string {
 	header := fmt.Sprintf("[%s] %s - %s", statusIndicator, status, a.selectedModel.Name)
 	styledHeader := a.theme.Header.Render(header)
 
+	// GPU stats
+	gpuLine := renderGPUStats(a)
+
 	// Construct log area
 	logContent := ""
 	if len(a.logs) == 0 {
@@ -760,7 +805,7 @@ func (a *App) renderDashboardView() string {
 
 	footer := fmt.Sprintf("\n%s", controlHint)
 
-	return fmt.Sprintf("%s\n\n%s\n\n%s", styledHeader, logBox, a.theme.Footer.Render(footer))
+	return fmt.Sprintf("%s%s\n\n%s\n\n%s", styledHeader, gpuLine, logBox, a.theme.Footer.Render(footer))
 }
 
 // selectModel handles the transition from selection to launch options
@@ -1087,6 +1132,7 @@ func (a *App) runBenchmark(m model.Model) tea.Cmd {
 // renderBenchmarkView renders the benchmark results table
 func (a *App) renderBenchmarkView() string {
 	s := a.theme.Header.Render("Benchmark Results") + "\n\n"
+	s += renderGPUStats(a) + "\n\n"
 
 	if a.benchmarking {
 		s += fmt.Sprintf("%s Running benchmark for %s...\n\n", a.spin.View(), a.benchmarkModelName)
@@ -1125,6 +1171,7 @@ func (a *App) renderCatalogView() string {
 	var s strings.Builder
 	s.WriteString(a.theme.Header.Render("Model Catalog"))
 	s.WriteString("\n\n")
+	s.WriteString(renderGPUStats(a) + "\n")
 
 	if a.downloadBusy {
 		s.WriteString(a.theme.Warning.Render(fmt.Sprintf("%s Downloading %s... Press 'b' to cancel", a.spin.View(), a.downloading)))
@@ -1170,6 +1217,7 @@ func (a *App) renderLaunchConfigView() string {
 	s.WriteString(a.theme.Header.Render(fmt.Sprintf("Launch %s Config", appName)))
 	s.WriteString("\n\n")
 	s.WriteString(fmt.Sprintf("Model: %s\n\n", a.pendingModel.Name))
+	s.WriteString(renderGPUStats(a) + "\n")
 
 	s.WriteString(a.theme.Secondary.Render("Port: ") + a.portInput.View() + "\n")
 	s.WriteString(a.theme.Secondary.Render("Context Size: ") + a.ctxSizeInput.View() + "\n")

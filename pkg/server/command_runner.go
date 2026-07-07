@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -448,25 +449,135 @@ func LoadCatalog() ([]CatalogModel, error) {
 	return nil, fmt.Errorf("no model catalog found")
 }
 
+// IsModelDownloaded checks if the HF repo already has blob files in the cache.
+func IsModelDownloaded(hfRepo string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+
+	// Normalize repo: replace / with -- for HF cache path
+	cachePath := strings.ReplaceAll(hfRepo, "/", "--")
+	if idx := strings.LastIndex(cachePath, ":"); idx != -1 {
+		cachePath = cachePath[:idx]
+	}
+
+	blobDir := filepath.Join(home, ".cache", "huggingface", "hub", fmt.Sprintf("models--%s", cachePath), "blobs")
+	entries, err := os.ReadDir(blobDir)
+	if err != nil {
+		return false
+	}
+
+	// Model is downloaded if blobs exist and none are .downloadInProgress
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".downloadInProgress") {
+			return false
+		}
+		if !e.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
 // DownloadModel downloads a model from HuggingFace using llama.
 func DownloadModel(ctx context.Context, hfRepo string) error {
-	if _, err := exec.LookPath("llama"); err != nil {
+	llamaPath, err := exec.LookPath("llama")
+	if err != nil {
 		return fmt.Errorf("llama not found in PATH — install llama.cpp to download models")
 	}
-	cmd := exec.CommandContext(ctx, "llama", "download", "-hf", hfRepo)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("download failed: %w (output: %s)", err, output)
+
+	// Check if model is already downloaded
+	if IsModelDownloaded(hfRepo) {
+		log.Printf("[download] %s already exists, skipping", hfRepo)
+		return nil
 	}
-	return nil
+
+	log.Printf("[download] binary: %s, repo: %s", llamaPath, hfRepo)
+
+	cmd := exec.CommandContext(ctx, llamaPath, "download", "-hf", hfRepo)
+	log.Printf("[download] command: %s", cmd.String())
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start download: %w", err)
+	}
+
+	var stderrBuf strings.Builder
+	var wg sync.WaitGroup
+
+	wg.Add(2)
+
+	// Discard stdout (download progress goes to stderr)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(io.Discard, stdout)
+	}()
+
+	// Stream stderr for logging
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			line := scanner.Text()
+			log.Printf("[download] %s", line)
+			stderrBuf.WriteString(line + "\n")
+		}
+		if scanner.Err() != nil {
+			log.Printf("[download] stderr error: %v", scanner.Err())
+		}
+	}()
+
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- cmd.Wait()
+	}()
+
+	select {
+	case <-ctx.Done():
+		log.Printf("[download] cancelling download (reason: %v)", ctx.Err())
+		cmd.Process.Kill()
+		<-errChan
+		wg.Wait()
+		return fmt.Errorf("download cancelled or timed out: %w", ctx.Err())
+	case err = <-errChan:
+		wg.Wait()
+		if err != nil {
+			log.Printf("[download] failed: %v", err)
+			log.Printf("[download] stderr: %s", stderrBuf.String())
+			return fmt.Errorf("download failed: %w (stderr: %s)", err, stderrBuf.String())
+		}
+		log.Printf("[download] completed successfully: %s", hfRepo)
+		return nil
+	}
 }
-func GetGPUInfo() string {
+// GPUStats holds structured GPU metrics.
+type GPUStats struct {
+	Temperature float64 // °C (junction/edge)
+	GPUUsage    float64 // % compute utilization
+	MemoryUsage float64 // % VRAM used
+	UsageText   string  // fallback text when structured parsing isn't available
+}
+
+// GetGPUStats returns GPU metrics from available tools.
+func GetGPUStats() GPUStats {
+	var stats GPUStats
+
 	// Try ROCm (AMD) first
 	if _, err := exec.LookPath("rocm-smi"); err == nil {
-		cmd := exec.Command("rocm-smi", "--showtemp", "--showpower", "--json")
+		cmd := exec.Command("rocm-smi", "--showtemp", "--showpower", "--showmemuse", "--showuse", "--json")
 		if output, err := cmd.Output(); err == nil {
-			if lines := strings.Split(strings.TrimSpace(string(output)), "\n"); len(lines) > 0 {
-				return "AMD ROCm: " + strings.TrimSpace(lines[0])
+			stats = parseROCmOutput(output)
+			if stats.Temperature > 0 {
+				return stats
 			}
 		}
 	}
@@ -475,8 +586,9 @@ func GetGPUInfo() string {
 	if _, err := exec.LookPath("nvidia-smi"); err == nil {
 		cmd := exec.Command("nvidia-smi", "--query-gpu=name,memory.used,memory.total,temperature.gpu,utilization.gpu", "--format=csv,noheader,nounits")
 		if output, err := cmd.Output(); err == nil {
-			if lines := strings.Split(strings.TrimSpace(string(output)), "\n"); len(lines) > 0 {
-				return "NVIDIA: " + strings.TrimSpace(lines[0])
+			stats = parseNvidiaOutput(output)
+			if stats.Temperature > 0 {
+				return stats
 			}
 		}
 	}
@@ -488,11 +600,82 @@ func GetGPUInfo() string {
 			for _, line := range strings.Split(string(output), "\n") {
 				lower := strings.ToLower(line)
 				if strings.Contains(lower, "vulkan") || strings.Contains(lower, "gpu") {
-					return strings.TrimSpace(line)
+					stats.UsageText = strings.TrimSpace(line)
+					return stats
 				}
 			}
 		}
 	}
 
-	return "GPU: not detected"
+	return stats
+}
+
+func parseROCmOutput(output []byte) GPUStats {
+	var result GPUStats
+	var data map[string]map[string]string
+	if err := json.Unmarshal(output, &data); err != nil {
+		return result
+	}
+
+	for _, card := range data {
+		// Temperature (use junction, fall back to edge)
+		if v := card["Temperature (Sensor junction) (C)"]; v != "" {
+			if t, err := strconv.ParseFloat(v, 64); err == nil && t > 0 {
+				result.Temperature = t
+			}
+		} else if v := card["Temperature (Sensor edge) (C)"]; v != "" {
+			if t, err := strconv.ParseFloat(v, 64); err == nil && t > 0 {
+				result.Temperature = t
+			}
+		}
+
+		// GPU compute usage
+		if v := card["GPU use (%)"]; v != "" {
+			if u, err := strconv.ParseFloat(v, 64); err == nil {
+				result.GPUUsage = u
+			}
+		}
+
+		// VRAM usage
+		if v := card["GPU Memory Allocated (VRAM%)"]; v != "" {
+			if m, err := strconv.ParseFloat(v, 64); err == nil {
+				result.MemoryUsage = m
+			}
+		}
+	}
+
+	return result
+}
+
+func parseNvidiaOutput(output []byte) GPUStats {
+	var result GPUStats
+	line := strings.TrimSpace(string(output))
+	if line == "" {
+		return result
+	}
+
+	parts := strings.Split(line, ",")
+	if len(parts) < 5 {
+		return result
+	}
+
+	// Skip GPU name (parts[0])
+	// parts[1] = memory.used MB, parts[2] = memory.total MB
+	memUsed, _ := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	memTotal, _ := strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
+	if memTotal > 0 {
+		result.MemoryUsage = (memUsed / memTotal) * 100
+	}
+
+	// parts[3] = temperature
+	if t, err := strconv.ParseFloat(strings.TrimSpace(parts[3]), 64); err == nil {
+		result.Temperature = t
+	}
+
+	// parts[4] = utilization.gpu
+	if u, err := strconv.ParseFloat(strings.TrimSpace(parts[4]), 64); err == nil {
+		result.GPUUsage = u
+	}
+
+	return result
 }
