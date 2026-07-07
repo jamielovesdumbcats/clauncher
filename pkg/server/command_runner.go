@@ -298,6 +298,7 @@ type RunningLlamaProcess struct {
 
 // FindRunningLlamaServers looks for running llama processes using pgrep/ps.
 // Returns a list of PIDs and their types if detectable.
+// Only matches actual "llama" binary processes, not terminal emulators or shell wrappers.
 func FindRunningLlamaServers() ([]RunningLlamaProcess, error) {
 	if _, err := exec.LookPath("pgrep"); err == nil {
 		cmd := exec.Command("pgrep", "-a", "-f", `llama\s+(serve|cli)`)
@@ -313,11 +314,15 @@ func FindRunningLlamaServers() ([]RunningLlamaProcess, error) {
 				continue
 			}
 			parts := strings.Fields(line)
-			if len(parts) < 1 {
+			if len(parts) < 2 {
 				continue
 			}
 			pid, err := strconv.Atoi(parts[0])
 			if err != nil {
+				continue
+			}
+			// Only include if the actual binary contains "llama" (not sh, alacritty, etc.)
+			if !strings.Contains(parts[1], "llama") {
 				continue
 			}
 			procType := "unknown"
