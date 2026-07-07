@@ -16,10 +16,11 @@ type Theme struct {
 	Border     lipgloss.Style
 	Dim        lipgloss.Style
 	Faint      lipgloss.Style
-	Panel      lipgloss.Style
-	PanelTitle lipgloss.Style
-	GPUPanel   lipgloss.Style
-	Command    lipgloss.Style
+		Panel        lipgloss.Style
+		PanelTitle   lipgloss.Style
+		GPUPanel     lipgloss.Style
+		ServersPanel lipgloss.Style
+		Command      lipgloss.Style
 	Key        lipgloss.Style
 	Banner     lipgloss.Style
 }
@@ -48,6 +49,13 @@ func NewTheme() *Theme {
 			BorderForeground(lipgloss.Color("13")).
 			Padding(0, 1).
 			MarginTop(1).
+			Width(30),
+		ServersPanel: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("11")).
+			Padding(0, 1).
+			MarginTop(1).
+			MarginLeft(1).
 			Width(30),
 		Command:    lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true),
 		Key:        lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true),

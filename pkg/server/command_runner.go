@@ -289,18 +289,18 @@ func ListLocalModels() ([]model.Model, error) {
 	return models, nil
 }
 
-// RunningLlamaProcess holds info about a detected running llama server.
+// RunningLlamaProcess holds info about a detected running llama process.
 type RunningLlamaProcess struct {
 	PID  int
 	Port int
+	Type string // "server", "cli", or "unknown"
 }
 
-// FindRunningLlamaServers looks for running llama server processes using pgrep/ps.
-// Returns a list of PIDs and their ports if detectable.
+// FindRunningLlamaServers looks for running llama processes using pgrep/ps.
+// Returns a list of PIDs and their types if detectable.
 func FindRunningLlamaServers() ([]RunningLlamaProcess, error) {
-	// Try pgrep first (Linux/macOS)
 	if _, err := exec.LookPath("pgrep"); err == nil {
-		cmd := exec.Command("pgrep", "-f", "llama.*serve")
+		cmd := exec.Command("pgrep", "-a", "-f", `llama\s+(serve|cli)`)
 		output, err := cmd.Output()
 		if err != nil {
 			return nil, nil // No processes found
@@ -312,11 +312,25 @@ func FindRunningLlamaServers() ([]RunningLlamaProcess, error) {
 			if line == "" {
 				continue
 			}
-			pid, err := strconv.Atoi(line)
+			parts := strings.Fields(line)
+			if len(parts) < 1 {
+				continue
+			}
+			pid, err := strconv.Atoi(parts[0])
 			if err != nil {
 				continue
 			}
-			procs = append(procs, RunningLlamaProcess{PID: pid})
+			procType := "unknown"
+			for _, p := range parts[1:] {
+				if p == "serve" {
+					procType = "server"
+					break
+				} else if p == "cli" {
+					procType = "cli"
+					break
+				}
+			}
+			procs = append(procs, RunningLlamaProcess{PID: pid, Type: procType})
 		}
 		return procs, nil
 	}
@@ -330,7 +344,7 @@ func FindRunningLlamaServers() ([]RunningLlamaProcess, error) {
 
 	var procs []RunningLlamaProcess
 	for _, line := range strings.Split(string(output), "\n") {
-		if strings.Contains(line, "llama") && strings.Contains(line, "serve") {
+		if strings.Contains(line, "llama") && (strings.Contains(line, "serve") || strings.Contains(line, "cli")) {
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {
 				pid, err := strconv.Atoi(parts[1])

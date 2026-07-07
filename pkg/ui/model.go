@@ -18,17 +18,27 @@ import (
 	"clauncher/pkg/ui/messages"
 	"clauncher/pkg/ui/theme"
 
-	textinput "github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/spinner"
+	textinput "github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // gpuTickMsg is sent every 2s to refresh GPU stats.
 type gpuTickMsg struct{}
 
 func gpuTickCmd() tea.Cmd {
-	return tea.Tick(2 * time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 		return gpuTickMsg{}
+	})
+}
+
+// serversTickMsg is sent every minute to refresh running server list.
+type serversTickMsg struct{}
+
+func serversTickCmd() tea.Cmd {
+	return tea.Tick(1*time.Minute, func(t time.Time) tea.Msg {
+		return serversTickMsg{}
 	})
 }
 
@@ -51,6 +61,7 @@ const (
 	ViewBenchmark
 	ViewLaunchConfig
 	ViewCatalog
+	ViewKillServer
 )
 
 // App is the root model for the application.
@@ -79,10 +90,10 @@ type App struct {
 	cursorPos int // model or option index in selection/launch views
 
 	// Catalog state
-	catalog        []server.CatalogModel
-	catalogCursor  int
-	downloading    string
-	downloadBusy   bool
+	catalog       []server.CatalogModel
+	catalogCursor int
+	downloading   string
+	downloadBusy  bool
 
 	// Running llama server detection
 	runtimeServers []server.RunningLlamaProcess
@@ -157,7 +168,7 @@ func NewApp(models []model.Model, runner server.ProcessRunner, runningServers []
 
 // Init starts the application.
 func (a *App) Init() tea.Cmd {
-	return gpuTickCmd() // Refresh GPU info every minute
+	return tea.Batch(gpuTickCmd(), serversTickCmd())
 }
 
 // Update handles all incoming messages.
@@ -179,7 +190,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "b", "esc":
 			// Go back to selection from dashboard or benchmark view
-			if a.currentView == ViewDashboard || a.currentView == ViewLaunchOptions || a.currentView == ViewBenchmark || a.currentView == ViewLaunchConfig || a.currentView == ViewCatalog {
+			if a.currentView == ViewDashboard || a.currentView == ViewLaunchOptions || a.currentView == ViewBenchmark || a.currentView == ViewLaunchConfig || a.currentView == ViewCatalog || a.currentView == ViewKillServer {
 				return a, a.goBack()
 			}
 		case "m":
@@ -216,14 +227,17 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "k":
 			// Kill running llama servers
-			if a.currentView == ViewSelection {
-				if err := server.KillLlamaServers(); err != nil {
-					a.err = fmt.Errorf("failed to kill servers: %w", err)
+			if a.currentView == ViewSelection || a.currentView == ViewLaunchOptions || a.currentView == ViewDashboard || a.currentView == ViewBenchmark || a.currentView == ViewCatalog || a.currentView == ViewLaunchConfig {
+				if len(a.runtimeServers) == 0 {
+					a.err = fmt.Errorf("no running servers to kill")
 					return a, nil
 				}
-				a.runtimeServers = nil
-				a.err = nil
-				return a, a.refreshModels()
+				a.cursorPos = 0
+				a.currentView = ViewKillServer
+				return a, nil
+			}
+			if a.currentView == ViewKillServer {
+				return a, a.killSelectedServer()
 			}
 		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 			// Select model by number (in selection view)
@@ -283,6 +297,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.cursorPos--
 			} else if a.currentView == ViewCatalog && a.catalogCursor > 0 {
 				a.catalogCursor--
+			} else if a.currentView == ViewKillServer && a.cursorPos > 0 {
+				a.cursorPos--
 			}
 			return a, nil
 		case "down":
@@ -293,6 +309,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.cursorPos++
 			} else if a.currentView == ViewCatalog && a.catalogCursor < len(a.catalog)-1 {
 				a.catalogCursor++
+			} else if a.currentView == ViewKillServer && a.cursorPos < len(a.runtimeServers)-1 {
+				a.cursorPos++
 			}
 			return a, nil
 		case "enter":
@@ -430,6 +448,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case gpuTickMsg:
 		a.gpuStats = server.GetGPUStats()
 		return a, gpuTickCmd()
+
+	case serversTickMsg:
+		if procs, err := server.FindRunningLlamaServers(); err == nil {
+			a.runtimeServers = procs
+		}
+		return a, serversTickCmd()
 
 	case tickMsg:
 		// Tick the spinner during busy states
@@ -572,11 +596,38 @@ func (a *App) goBack() tea.Cmd {
 	} else if a.currentView == ViewDashboard {
 		a.currentView = ViewSelection
 		a.selectedModel = nil
-	} else if a.currentView == ViewBenchmark || a.currentView == ViewCatalog {
+	} else if a.currentView == ViewBenchmark || a.currentView == ViewCatalog || a.currentView == ViewKillServer {
 		a.currentView = ViewSelection
 	}
 	a.err = nil // Clear any error state when returning to selection
 	return nil
+}
+
+// killSelectedServer kills the server at cursorPos and refreshes the server list.
+func (a *App) killSelectedServer() tea.Cmd {
+	if a.cursorPos < 0 || a.cursorPos >= len(a.runtimeServers) {
+		a.err = fmt.Errorf("invalid server selection")
+		return nil
+	}
+
+	target := a.runtimeServers[a.cursorPos]
+	if err := server.KillLlamaServer(target.PID); err != nil {
+		a.err = fmt.Errorf("failed to kill PID %d: %w", target.PID, err)
+		return nil
+	}
+
+	// Remove the killed server from the list
+	a.runtimeServers = append(a.runtimeServers[:a.cursorPos], a.runtimeServers[a.cursorPos+1:]...)
+	a.cursorPos = 0
+
+	if len(a.runtimeServers) == 0 {
+		a.currentView = ViewSelection
+		a.err = nil
+		return a.refreshModels()
+	}
+
+	a.err = nil
+	return a.refreshModels()
 }
 
 // refreshModels triggers a refresh of the local models list
@@ -608,6 +659,8 @@ func (a *App) View() string {
 		return a.renderLaunchConfigView()
 	case ViewCatalog:
 		return a.renderCatalogView()
+	case ViewKillServer:
+		return a.renderKillServerView()
 	default:
 		return "Unknown View"
 	}
@@ -648,7 +701,40 @@ func renderGPUStats(a *App) string {
 		compStyle.Render(compVal),
 		memStyle.Render(memVal))
 
-	return a.theme.GPUPanel.Render(a.theme.PanelTitle.Render("GPU Stats") + "\n" + stats) + "\n"
+	return a.theme.GPUPanel.Render(a.theme.PanelTitle.Render("GPU Stats") + "\n" + stats)
+}
+
+// renderServersStats renders the running servers panel.
+func renderServersStats(a *App) string {
+	content := ""
+	if len(a.runtimeServers) == 0 {
+		content = "  No servers running"
+	} else {
+		for i, p := range a.runtimeServers {
+			line := fmt.Sprintf("PID %d", p.PID)
+			if p.Port > 0 {
+				line += fmt.Sprintf(" :%d", p.Port)
+			}
+			if p.Type != "" && p.Type != "unknown" {
+				line += fmt.Sprintf(" (%s)", p.Type)
+			}
+			if i == 0 {
+				content += a.theme.Warning.Render(line)
+			} else {
+				content += "\n" + a.theme.Warning.Render(line)
+			}
+		}
+	}
+
+	return a.theme.ServersPanel.Render(a.theme.PanelTitle.Render("Servers") + "\n" + content)
+}
+
+// renderStatusPanes renders GPU and Servers panels side by side.
+func renderStatusPanes(a *App) string {
+	gpu := renderGPUStats(a)
+	srv := renderServersStats(a)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, gpu, srv) + "\n"
 }
 
 // renderSelectionView renders the model selection UI.
@@ -668,14 +754,8 @@ func (a *App) renderSelectionView() string {
 	s.WriteString(a.theme.Banner.Render(banner))
 	s.WriteString("\n\n")
 
-	// GPU stats panel
-	s.WriteString(renderGPUStats(a))
-
-	// Running servers warning
-	if len(a.runtimeServers) > 0 {
-		s.WriteString(a.theme.Warning.Render(fmt.Sprintf("  ⚠ %d llama server(s) running (PIDs: %v). Press %s to kill.\n\n",
-			len(a.runtimeServers), formatPIDs(a.runtimeServers), a.theme.Key.Render("k"))))
-	}
+	// GPU + Servers status panels
+	s.WriteString(renderStatusPanes(a))
 
 	// Loading indicator
 	if a.refreshing {
@@ -684,14 +764,14 @@ func (a *App) renderSelectionView() string {
 
 	// Models panel
 	if len(a.models) == 0 && !a.refreshing {
-		s.WriteString(a.theme.Faint.Render("  No models found. Press "+a.theme.Key.Render("r")+" to refresh.\n"))
+		s.WriteString(a.theme.Faint.Render("  No models found. Press " + a.theme.Key.Render("r") + " to refresh.\n"))
 	} else if len(a.models) > 0 {
 		modelLines := ""
 		for i, m := range a.models {
 			if i == a.cursorPos {
 				modelLines += fmt.Sprintf("  %s %d. %s\n", a.theme.Success.Render("▸"), i+1, m.Name)
 			} else {
-				modelLines += fmt.Sprintf("  %s %d. %s\n", a.theme.Faint.Render(" " ), i+1, m.Name)
+				modelLines += fmt.Sprintf("  %s %d. %s\n", a.theme.Faint.Render(" "), i+1, m.Name)
 			}
 		}
 		modelsPanel := a.theme.Panel.Render(a.theme.PanelTitle.Render("Models") + "\n" + modelLines)
@@ -717,24 +797,16 @@ func (a *App) renderSelectionView() string {
 	return s.String()
 }
 
-func formatPIDs(procs []server.RunningLlamaProcess) string {
-	var parts []string
-	for _, p := range procs {
-		parts = append(parts, fmt.Sprint(p.PID))
-	}
-	return strings.Join(parts, ", ")
-}
-
 // renderLaunchOptionsView renders the launch options UI.
 func (a *App) renderLaunchOptionsView() string {
 	s := a.theme.Header.Render("Launch Options") + "\n\n"
 	s += a.theme.Primary.Render(fmt.Sprintf("Model: %s\n\n", a.pendingModel.Name))
-	s += renderGPUStats(a) + "\n"
+	s += renderStatusPanes(a)
 
 	options := []struct {
-		label  string
-		style  func(strs ...string) string
-		desc   string
+		label string
+		style func(strs ...string) string
+		desc  string
 	}{
 		{"Launch Llama Server", a.theme.Success.Render, "open in browser"},
 		{"Launch Llama CLI", a.theme.Secondary.Render, "new terminal"},
@@ -744,15 +816,16 @@ func (a *App) renderLaunchOptionsView() string {
 		{"Run Benchmark", a.theme.Info.Render, "for this model"},
 	}
 
+	optionLines := ""
 	for i, opt := range options {
-		prefix := "  "
+		prefix := a.theme.Faint.Render(" ")
 		if i == a.cursorPos {
-			prefix = a.theme.Success.Render("  ➤")
-		} else {
-			prefix = "    "
+			prefix = a.theme.Success.Render("▸")
 		}
-		s += fmt.Sprintf("%s %s (%s)\n", prefix, opt.style(opt.label), opt.desc)
+		optionLines += fmt.Sprintf("  %s %d. %s (%s)\n", prefix, i+1, opt.style(opt.label), opt.desc)
 	}
+
+	s += a.theme.Panel.Render(a.theme.PanelTitle.Render("Options") + "\n" + optionLines)
 	s += "\n↑↓: navigate | enter: launch | 1-6: quick pick | b: back"
 	return s
 }
@@ -778,7 +851,7 @@ func (a *App) renderDashboardView() string {
 	styledHeader := a.theme.Header.Render(header)
 
 	// GPU stats
-	gpuLine := renderGPUStats(a)
+	gpuLine := renderStatusPanes(a)
 
 	// Construct log area
 	logContent := ""
@@ -1132,7 +1205,7 @@ func (a *App) runBenchmark(m model.Model) tea.Cmd {
 // renderBenchmarkView renders the benchmark results table
 func (a *App) renderBenchmarkView() string {
 	s := a.theme.Header.Render("Benchmark Results") + "\n\n"
-	s += renderGPUStats(a) + "\n\n"
+	s += renderStatusPanes(a) + "\n"
 
 	if a.benchmarking {
 		s += fmt.Sprintf("%s Running benchmark for %s...\n\n", a.spin.View(), a.benchmarkModelName)
@@ -1171,7 +1244,7 @@ func (a *App) renderCatalogView() string {
 	var s strings.Builder
 	s.WriteString(a.theme.Header.Render("Model Catalog"))
 	s.WriteString("\n\n")
-	s.WriteString(renderGPUStats(a) + "\n")
+	s.WriteString(renderStatusPanes(a))
 
 	if a.downloadBusy {
 		s.WriteString(a.theme.Warning.Render(fmt.Sprintf("%s Downloading %s... Press 'b' to cancel", a.spin.View(), a.downloading)))
@@ -1217,7 +1290,7 @@ func (a *App) renderLaunchConfigView() string {
 	s.WriteString(a.theme.Header.Render(fmt.Sprintf("Launch %s Config", appName)))
 	s.WriteString("\n\n")
 	s.WriteString(fmt.Sprintf("Model: %s\n\n", a.pendingModel.Name))
-	s.WriteString(renderGPUStats(a) + "\n")
+	s.WriteString(renderStatusPanes(a))
 
 	s.WriteString(a.theme.Secondary.Render("Port: ") + a.portInput.View() + "\n")
 	s.WriteString(a.theme.Secondary.Render("Context Size: ") + a.ctxSizeInput.View() + "\n")
@@ -1230,6 +1303,31 @@ func (a *App) renderLaunchConfigView() string {
 
 	s.WriteString("\n")
 	s.WriteString("Tab: switch field | Enter: launch | b: go back")
+
+	return s.String()
+}
+
+// renderKillServerView renders the kill server selection modal.
+func (a *App) renderKillServerView() string {
+	var s strings.Builder
+	s.WriteString(a.theme.Header.Render("Kill Server"))
+	s.WriteString("\n\n")
+	s.WriteString("Select a server to kill, then press " + a.theme.Key.Render("k") + ".\n\n")
+
+	for i, p := range a.runtimeServers {
+		prefix := "    "
+		if i == a.cursorPos {
+			prefix = a.theme.Warning.Render("  ➤ ")
+		}
+		line := fmt.Sprintf("%d. PID %d", i+1, p.PID)
+		if p.Port > 0 {
+			line += fmt.Sprintf(" :%d", p.Port)
+		}
+		s.WriteString(prefix + line + "\n")
+	}
+
+	s.WriteString("\n")
+	s.WriteString("↑↓: navigate | " + a.theme.Key.Render("k") + ": kill | b: back")
 
 	return s.String()
 }
