@@ -649,6 +649,34 @@ func IsModelDownloaded(hfRepo string) bool {
 	return false
 }
 
+// DeleteModel removes a model from the HuggingFace cache directory.
+// repoPath is the full HF path (e.g., "mradermacher/gemma-4-26B-A4B-it-GGUF:IQ4_XS").
+func DeleteModel(repoPath string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	// Strip quant suffix after colon
+	path := repoPath
+	if idx := strings.LastIndex(path, ":"); idx != -1 {
+		path = path[:idx]
+	}
+
+	// Normalize: replace / with -- for HF cache path
+	cachePath := strings.ReplaceAll(path, "/", "--")
+	cacheDir := filepath.Join(home, ".cache", "huggingface", "hub", fmt.Sprintf("models--%s", cachePath))
+
+	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
+		return fmt.Errorf("model not found in cache: %s", repoPath)
+	}
+
+	if err := os.RemoveAll(cacheDir); err != nil {
+		return fmt.Errorf("failed to delete model: %w", err)
+	}
+	return nil
+}
+
 // DownloadModel downloads a model from HuggingFace using llama.
 func DownloadModel(ctx context.Context, hfRepo string) error {
 	llamaPath, err := exec.LookPath("llama")

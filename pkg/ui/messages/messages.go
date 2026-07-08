@@ -82,6 +82,12 @@ type ModelAddedToCatalogMsg struct {
 	Error error
 }
 
+// ModelDeletedMsg is sent when a model is deleted from cache.
+type ModelDeletedMsg struct {
+	Model string
+	Error error
+}
+
 // SuccessMsg is sent for success notifications.
 type SuccessMsg struct {
 	Message string

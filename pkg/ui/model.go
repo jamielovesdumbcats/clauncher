@@ -394,6 +394,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.currentView == ViewSelection && !a.refreshing {
 				return a, a.refreshModels()
 			}
+		case "x":
+			// Delete selected model
+			if a.currentView == ViewSelection && a.cursorPos < len(a.models) {
+				return a, a.deleteModel(a.cursorPos)
+			}
 		case "k":
 			// Kill running llama servers
 			if a.currentView == ViewSelection || a.currentView == ViewLaunchOptions || a.currentView == ViewDashboard || a.currentView == ViewBenchmark || a.currentView == ViewCatalog || a.currentView == ViewLaunchConfig {
@@ -763,6 +768,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.currentView = ViewCatalog
 
+	case messages.ModelDeletedMsg:
+		if m.Error != nil {
+			a.err = fmt.Errorf("delete failed: %w", m.Error)
+			return a, nil
+		}
+		return a, tea.Batch(a.refreshModels(), func() tea.Msg {
+			return messages.SuccessMsg{Message: fmt.Sprintf("Deleted %s", m.Model)}
+		})
+
 	case messages.SuccessMsg:
 		a.downloadProgress = m.Message
 		return a, nil
@@ -857,6 +871,23 @@ func (a *App) refreshModels() tea.Cmd {
 	return func() tea.Msg {
 		models, err := server.ListLocalModels()
 		return messages.ModelsRefreshedMsg{Models: models, Error: err}
+	}
+}
+
+// deleteModel removes the model at cursorPos from the HF cache.
+func (a *App) deleteModel(idx int) tea.Cmd {
+	if idx < 0 || idx >= len(a.models) {
+		a.err = fmt.Errorf("invalid model selection")
+		return nil
+	}
+
+	m := a.models[idx]
+	repoName := m.Config["model_name"]
+	displayName := m.Name
+
+	return func() tea.Msg {
+		err := server.DeleteModel(repoName)
+		return messages.ModelDeletedMsg{Model: displayName, Error: err}
 	}
 }
 
@@ -1012,7 +1043,7 @@ func (a *App) renderSelectionView() string {
 
 	// Commands panel
 	cmds := ""
-	cmds += fmt.Sprintf("  %s/%s %s | %s %s | %s %s | %s %s | %s %s | %s %s | %s %s | %s %s\n",
+	cmds += fmt.Sprintf("  %s/%s %s | %s %s | %s %s | %s %s | %s %s | %s %s | %s %s | %s %s | %s %s\n",
 		a.theme.Key.Render("↑"), a.theme.Key.Render("↓"), "Navigate",
 		a.theme.Key.Render("Enter"), "Select",
 		a.theme.Key.Render("s"), "Search HuggingFace",
@@ -1020,6 +1051,7 @@ func (a *App) renderSelectionView() string {
 		a.theme.Key.Render("k"), "Kill servers",
 		a.theme.Key.Render("d"), "Catalog",
 		a.theme.Key.Render("m"), "Benchmarks",
+		a.theme.Key.Render("x"), "Delete",
 		a.theme.Key.Render("q"), "Quit",
 	)
 	cmdsPanel := a.theme.Panel.Render(cmds)
