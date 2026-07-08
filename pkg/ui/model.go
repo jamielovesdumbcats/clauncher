@@ -24,6 +24,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// terminalWidth returns the current terminal width or a default of 80.
+func (a *App) terminalWidth() int {
+	if a.termWidth > 0 {
+		return a.termWidth
+	}
+	return 80
+}
+
 // gpuTickMsg is sent every 2s to refresh GPU stats.
 type gpuTickMsg struct{}
 
@@ -70,6 +78,7 @@ const (
 type App struct {
 	currentView ViewState
 	theme       *theme.Theme
+	termWidth   int // terminal width for gradient bars
 
 	// Shared Context/State
 	models        []model.Model
@@ -138,6 +147,11 @@ type App struct {
 	searchBusy    bool
 
 	searchCursor int
+
+	// Confirmation modal state
+	modalShow     bool
+	modalMessage  string
+	modalCallback func() tea.Cmd
 }
 
 // NewApp initializes a new application instance.
@@ -198,7 +212,25 @@ func (a *App) Init() tea.Cmd {
 // Update handles all incoming messages.
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
-	case tea.KeyMsg:
+		case tea.WindowSizeMsg:
+			a.termWidth = m.Width
+			return a, nil
+
+		case tea.KeyMsg:
+		if a.modalShow {
+			if m.String() == "y" {
+				a.modalShow = false
+				if a.modalCallback != nil {
+					return a, a.modalCallback()
+				}
+				return a, nil
+			}
+			if m.String() == "n" || m.String() == "esc" || m.String() == "b" {
+				a.modalShow = false
+				return a, nil
+			}
+			return a, nil
+		}
 		if a.currentView == ViewSearch {
 			if m.String() == "ctrl+c" {
 				return a, tea.Quit
@@ -837,7 +869,7 @@ func (a *App) goBack() tea.Cmd {
 	return nil
 }
 
-// killSelectedServer kills the server at cursorPos and refreshes the server list.
+// killSelectedServer shows a confirmation modal before killing the server.
 func (a *App) killSelectedServer() tea.Cmd {
 	if a.cursorPos < 0 || a.cursorPos >= len(a.runtimeServers) {
 		a.err = fmt.Errorf("invalid server selection")
@@ -845,23 +877,28 @@ func (a *App) killSelectedServer() tea.Cmd {
 	}
 
 	target := a.runtimeServers[a.cursorPos]
-	if err := server.KillLlamaServer(target.PID); err != nil {
-		a.err = fmt.Errorf("failed to kill PID %d: %w", target.PID, err)
-		return nil
-	}
+	a.modalShow = true
+	a.modalMessage = fmt.Sprintf("Kill PID %d?", target.PID)
+	a.modalCallback = func() tea.Cmd {
+		a.modalShow = false
+		if err := server.KillLlamaServer(target.PID); err != nil {
+			a.err = fmt.Errorf("failed to kill PID %d: %w", target.PID, err)
+			return nil
+		}
 
-	// Remove the killed server from the list
-	a.runtimeServers = append(a.runtimeServers[:a.cursorPos], a.runtimeServers[a.cursorPos+1:]...)
-	a.cursorPos = 0
+		a.runtimeServers = append(a.runtimeServers[:a.cursorPos], a.runtimeServers[a.cursorPos+1:]...)
+		a.cursorPos = 0
 
-	if len(a.runtimeServers) == 0 {
-		a.currentView = ViewSelection
+		if len(a.runtimeServers) == 0 {
+			a.currentView = ViewSelection
+			a.err = nil
+			return a.refreshModels()
+		}
+
 		a.err = nil
 		return a.refreshModels()
 	}
-
-	a.err = nil
-	return a.refreshModels()
+	return nil
 }
 
 // refreshModels triggers a refresh of the local models list
@@ -874,7 +911,7 @@ func (a *App) refreshModels() tea.Cmd {
 	}
 }
 
-// deleteModel removes the model at cursorPos from the HF cache.
+// deleteModel shows a confirmation modal before removing the model at idx.
 func (a *App) deleteModel(idx int) tea.Cmd {
 	if idx < 0 || idx >= len(a.models) {
 		a.err = fmt.Errorf("invalid model selection")
@@ -882,13 +919,18 @@ func (a *App) deleteModel(idx int) tea.Cmd {
 	}
 
 	m := a.models[idx]
-	repoName := m.Config["model_name"]
-	displayName := m.Name
-
-	return func() tea.Msg {
-		err := server.DeleteModel(repoName)
-		return messages.ModelDeletedMsg{Model: displayName, Error: err}
+	a.modalShow = true
+	a.modalMessage = fmt.Sprintf("Delete %s?", m.Name)
+	a.modalCallback = func() tea.Cmd {
+		a.modalShow = false
+		repoName := m.Config["model_name"]
+		displayName := m.Name
+		return func() tea.Msg {
+			err := server.DeleteModel(repoName)
+			return messages.ModelDeletedMsg{Model: displayName, Error: err}
+		}
 	}
+	return nil
 }
 
 // View renders the current application state.
@@ -897,28 +939,58 @@ func (a *App) View() string {
 		return a.theme.Error.Render(fmt.Sprintf("Error: %v\n\nPress 'b' to go back", a.err))
 	}
 
+	viewContent := ""
 	switch a.currentView {
 	case ViewSelection:
-		return a.renderSelectionView()
+		viewContent = a.renderSelectionView()
 	case ViewLaunchOptions:
-		return a.renderLaunchOptionsView()
+		viewContent = a.renderLaunchOptionsView()
 	case ViewDashboard:
-		return a.renderDashboardView()
+		viewContent = a.renderDashboardView()
 	case ViewBenchmark:
-		return a.renderBenchmarkView()
+		viewContent = a.renderBenchmarkView()
 	case ViewLaunchConfig:
-		return a.renderLaunchConfigView()
+		viewContent = a.renderLaunchConfigView()
 	case ViewCatalog:
-		return a.renderCatalogView()
+		viewContent = a.renderCatalogView()
 	case ViewKillServer:
-		return a.renderKillServerView()
+		viewContent = a.renderKillServerView()
 	case ViewSearch:
-		return a.renderSearchView()
+		viewContent = a.renderSearchView()
 	case ViewQuants:
-		return a.renderQuantsView()
+		viewContent = a.renderQuantsView()
 	default:
 		return "Unknown View"
 	}
+
+	if a.modalShow {
+		return viewContent + "\n" + a.renderModal()
+	}
+	return viewContent
+}
+
+// renderModal renders a centered confirmation modal.
+func (a *App) renderModal() string {
+	modalContent := fmt.Sprintf("  %s\n\n  %s %s\n  %s %s",
+		a.modalMessage,
+		a.theme.Success.Render("[y]"),
+		a.theme.Primary.Render("Yes"),
+		a.theme.Faint.Render("[n]"),
+		a.theme.Faint.Render("No"),
+	)
+
+	modalBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.ColorOrange).
+		Padding(1, 2).
+		Width(40).
+		Align(lipgloss.Center).
+		Render(modalContent)
+
+	return lipgloss.NewStyle().
+		Width(a.terminalWidth()).
+		Align(lipgloss.Center).
+		Render(modalBox)
 }
 
 // renderGPUStats renders the GPU stats panel. Returns empty string if no GPU detected.
@@ -928,7 +1000,8 @@ func renderGPUStats(a *App) string {
 	}
 
 	if a.gpuStats.UsageText != "" {
-		return a.theme.GPUPanel.Render(a.theme.PanelTitle.Render("GPU Stats") + "\n" + a.theme.Faint.Render(a.gpuStats.UsageText))
+		gpuContent := a.theme.PanelHeader("GPU Stats", a.theme.PanelTitleCyan) + a.theme.Faint.Render("\n"+a.gpuStats.UsageText)
+		return a.theme.PanelCyan.Render(gpuContent)
 	}
 
 	// Fixed-width values: 5 chars max (e.g., "  99°C", " 100%")
@@ -956,14 +1029,15 @@ func renderGPUStats(a *App) string {
 		compStyle.Render(compVal),
 		memStyle.Render(memVal))
 
-	return a.theme.GPUPanel.Render(a.theme.PanelTitle.Render("GPU Stats") + "\n" + stats)
+	gpuContent := a.theme.PanelHeader("GPU Stats", a.theme.PanelTitleCyan) + "\n" + stats
+	return a.theme.PanelCyan.Render(gpuContent)
 }
 
 // renderServersStats renders the running servers panel.
 func renderServersStats(a *App) string {
 	content := ""
 	if len(a.runtimeServers) == 0 {
-		content = "  No servers running"
+		content = "  " + a.theme.Faint.Render("No servers running")
 	} else {
 		for i, p := range a.runtimeServers {
 			line := fmt.Sprintf("PID %d", p.PID)
@@ -981,7 +1055,8 @@ func renderServersStats(a *App) string {
 		}
 	}
 
-	return a.theme.ServersPanel.Render(a.theme.PanelTitle.Render("Servers") + "\n" + content)
+	srvContent := a.theme.PanelHeader("Servers", a.theme.PanelTitleYellow) + "\n" + content
+	return a.theme.PanelYellow.Render(srvContent)
 }
 
 // renderStatusPanes renders GPU and Servers panels side by side.
@@ -996,16 +1071,20 @@ func renderStatusPanes(a *App) string {
 func (a *App) renderSelectionView() string {
 	var s strings.Builder
 
+	// Gradient accent bar
+	s.WriteString(a.theme.GradientBar(a.terminalWidth()))
+	s.WriteString("\n\n")
+
 	// ASCII Art header
 	banner := `
-  ╔═══════════════════════════════════╗
-  ║   ████████╗███████╗██████╗ ████   ║
-  ║   ╚══██╔══╝██╔════╝██╔══██╗███   ║
-  ║      ██║   █████╗  ██████╔╝██    ║
-  ║      ██║   ██╔══╝  ██╔══██╗██    ║
-  ║      ██║   ███████╗██║  ██║██    ║
-  ║      ╚═╝   ╚══════╝╚═╝  ╚═╝╝╝    ║
-  ╚═══════════════════════════════════╝`
+   ╔═══════════════════════════════════╗
+   ║   ████████╗███████╗██████╗ ████   ║
+   ║   ╚══██╔══╝██╔════╝██╔══██╗███   ║
+   ║      ██║   █████╗  ██████╔╝██    ║
+   ║      ██║   ██╔══╝  ██╔══██╗██    ║
+   ║      ██║   ███████╗██║  ██║██    ║
+   ║      ╚═╝   ╚══════╝╚═╝  ╚═╝╝╝    ║
+   ╚═══════════════════════════════════╝`
 	s.WriteString(a.theme.Banner.Render(banner))
 	s.WriteString("\n\n")
 
@@ -1025,37 +1104,42 @@ func (a *App) renderSelectionView() string {
 	// Models panel
 	if len(a.models) == 0 && !a.refreshing {
 		s.WriteString(a.theme.Faint.Render("  No local models found.\n"))
-		s.WriteString(a.theme.Faint.Render("  Press " + a.theme.Key.Render("d") + " to browse catalog and download models.\n"))
+		s.WriteString(a.theme.Faint.Render("  Press " + a.theme.Key.Render("d") + " to browse catalog and download models.\n\n"))
 	} else if len(a.models) > 0 {
 		modelLines := ""
 		for i, m := range a.models {
 			if i == a.cursorPos {
-				modelLines += fmt.Sprintf("  %s %d. %s\n", a.theme.Success.Render("▸"), i+1, m.Name)
+				modelLines += fmt.Sprintf(" %s %d. %s\n", a.theme.PanelTitleMagenta.Render("▸"), i+1, m.Name)
 			} else {
-				modelLines += fmt.Sprintf("  %s %d. %s\n", a.theme.Faint.Render(" "), i+1, m.Name)
+				modelLines += fmt.Sprintf("  %d. %s\n", i+1, m.Name)
 			}
 		}
-		modelsPanel := a.theme.Panel.Render(a.theme.PanelTitle.Render("Models") + "\n" + modelLines)
+		modelContent := a.theme.PanelHeader("Models", a.theme.PanelTitleMagenta) + modelLines
+		modelsPanel := a.theme.PanelMagenta.Render(modelContent)
 		s.WriteString(modelsPanel)
 	}
 
 	s.WriteString("\n")
 
 	// Commands panel
-	cmds := ""
-	cmds += fmt.Sprintf("  %s/%s %s | %s %s | %s %s | %s %s | %s %s | %s %s | %s %s | %s %s | %s %s\n",
-		a.theme.Key.Render("↑"), a.theme.Key.Render("↓"), "Navigate",
-		a.theme.Key.Render("Enter"), "Select",
-		a.theme.Key.Render("s"), "Search HuggingFace",
-		a.theme.Key.Render("r"), "Refresh",
-		a.theme.Key.Render("k"), "Kill servers",
-		a.theme.Key.Render("d"), "Catalog",
-		a.theme.Key.Render("m"), "Benchmarks",
-		a.theme.Key.Render("x"), "Delete",
-		a.theme.Key.Render("q"), "Quit",
+	cmds := fmt.Sprintf("  %s/%s Navigate | %s Select | %s Search HF | %s Refresh | %s Kill | %s Catalog | %s Bench | %s Delete | %s Quit",
+		a.theme.Key.Render("↑"), a.theme.Key.Render("↓"),
+		a.theme.Key.Render("Enter"),
+		a.theme.Key.Render("s"),
+		a.theme.Key.Render("r"),
+		a.theme.Key.Render("k"),
+		a.theme.Key.Render("d"),
+		a.theme.Key.Render("m"),
+		a.theme.Key.Render("x"),
+		a.theme.Key.Render("q"),
 	)
-	cmdsPanel := a.theme.Panel.Render(cmds)
+	cmdContent := a.theme.PanelHeader("Commands", a.theme.PanelTitleYellow) + "\n" + cmds
+	cmdsPanel := a.theme.PanelGreen.Render(cmdContent)
 	s.WriteString(cmdsPanel)
+
+	// Status bar footer
+	hints := []string{"↑↓ Navigate", "Enter Select", "s Search", "d Catalog", "r Refresh", "k Kill", "m Bench", "x Delete", "q Quit"}
+	s.WriteString(a.theme.StatusBar("Selection", hints, a.terminalWidth()))
 
 	return s.String()
 }
@@ -1088,8 +1172,9 @@ func (a *App) renderLaunchOptionsView() string {
 		optionLines += fmt.Sprintf("  %s %d. %s (%s)\n", prefix, i+1, opt.style(opt.label), opt.desc)
 	}
 
-	s += a.theme.Panel.Render(a.theme.PanelTitle.Render("Options") + "\n" + optionLines)
-	s += "\n↑↓: navigate | enter: launch | 1-6: quick pick | b: back"
+	s += a.theme.PanelBlue.Render(a.theme.PanelTitle.Render("Options") + "\n" + optionLines)
+	hints := []string{"↑↓ Navigate", "Enter Launch", "1-6 Quick", "b Back"}
+	s += a.theme.StatusBar("Launch Options", hints, a.terminalWidth())
 	return s
 }
 
@@ -1131,17 +1216,10 @@ func (a *App) renderDashboardView() string {
 	}
 
 	// Use a bordered box for logs
-	logBox := a.theme.Border.Render(logContent)
+	logBox := a.theme.PanelBlue.Render(logContent)
 
-	// Control hints
-	controlHint := "[s] toggle start/stop | [b] back | [q] quit"
-	if status == model.StatusRunning {
-		controlHint = "[s] stop | [b] back | [q] quit"
-	}
-
-	footer := fmt.Sprintf("\n%s", controlHint)
-
-	return fmt.Sprintf("%s%s\n\n%s\n\n%s", styledHeader, gpuLine, logBox, a.theme.Footer.Render(footer))
+	hints := []string{"s Toggle", "b Back", "q Quit"}
+	return fmt.Sprintf("%s%s\n\n%s%s", styledHeader, gpuLine, logBox, a.theme.StatusBar("Dashboard", hints, a.terminalWidth()))
 }
 
 // selectModel handles the transition from selection to launch options
@@ -1473,14 +1551,16 @@ func (a *App) renderBenchmarkView() string {
 	if a.benchmarking {
 		s += fmt.Sprintf("%s Running benchmark for %s...\n\n", a.spin.View(), a.benchmarkModelName)
 		s += "This may take a while.\n"
-		s += "\nPress 'b' to go back"
+		hints := []string{"b Back"}
+		s += a.theme.StatusBar("Benchmarking", hints, a.terminalWidth())
 		return s
 	}
 
 	if len(a.benchmarkResults) == 0 {
 		s += "No benchmarks run yet.\n\n"
 		s += "Select a model then press 'm' to run a benchmark.\n"
-		s += "\nb: go back | c: clear"
+		hints := []string{"b Back", "c Clear"}
+		s += a.theme.StatusBar("Benchmark", hints, a.terminalWidth())
 		return s
 	}
 
@@ -1498,7 +1578,8 @@ func (a *App) renderBenchmarkView() string {
 			r.SGTTokensPerSecond, r.Timestamp[:10])
 	}
 
-	s += "\nb: go back | c: clear"
+	hints := []string{"b Back", "c Clear", "m Run Again"}
+	s += a.theme.StatusBar("Benchmarks", hints, a.terminalWidth())
 	return s
 }
 
@@ -1510,18 +1591,20 @@ func (a *App) renderCatalogView() string {
 	s.WriteString(renderStatusPanes(a))
 
 	if a.downloadBusy {
-		s.WriteString("\n  " + a.theme.Warning.Render(fmt.Sprintf("%s Downloading: %s", a.spin.View(), a.downloading)) + "\n\n")
-		s.WriteString(a.theme.Faint.Render(fmt.Sprintf("  %s: cancel download | %s: continue in background\n\n", a.theme.Key.Render("b"), a.theme.Key.Render("esc"))))
+		s.WriteString("\n  " + a.theme.Warning.Render(fmt.Sprintf("%s Downloading: %s", a.spin.View(), a.downloading)) + "\n")
+		hints := []string{"b Cancel", "esc Background"}
+		s.WriteString(a.theme.StatusBar("Downloading", hints, a.terminalWidth()))
 		return s.String()
 	}
 
 	if a.downloadProgress != "" {
-		s.WriteString("\n  " + a.theme.Success.Render("✓ " + a.downloadProgress) + "\n\n")
+		s.WriteString("\n  " + a.theme.Success.Render("✓ " + a.downloadProgress) + "\n")
 	}
 
 	if len(a.catalog) == 0 {
 		s.WriteString(a.theme.Faint.Render("  No models in catalog.\n"))
-		s.WriteString("\nb: go back")
+		hints := []string{"b Back"}
+		s.WriteString(a.theme.StatusBar("Catalog", hints, a.terminalWidth()))
 		return s.String()
 	}
 
@@ -1545,8 +1628,9 @@ func (a *App) renderCatalogView() string {
 		}
 	}
 
-	s.WriteString(a.theme.Panel.Render(a.theme.PanelTitle.Render("Catalog") + "\n" + catalogLines))
-	s.WriteString("\n↑↓: navigate | enter: download | b: go back")
+	s.WriteString(a.theme.PanelOrange.Render(a.theme.PanelTitle.Render("Catalog") + "\n" + catalogLines))
+	hints := []string{"↑↓ Navigate", "Enter Download", "b Back"}
+	s.WriteString(a.theme.StatusBar("Catalog", hints, a.terminalWidth()))
 	return s.String()
 }
 
@@ -1581,8 +1665,8 @@ func (a *App) renderLaunchConfigView() string {
 	}
 
 	s.WriteString("\n")
-	s.WriteString("Tab: switch field | Enter: launch | b: go back")
-
+	hints := []string{"Tab Switch", "Enter Launch", "b Back"}
+	s.WriteString(a.theme.StatusBar(fmt.Sprintf("Launch %s", appName), hints, a.terminalWidth()))
 	return s.String()
 }
 
@@ -1606,8 +1690,8 @@ func (a *App) renderKillServerView() string {
 	}
 
 	s.WriteString("\n")
-	s.WriteString("↑↓: navigate | " + a.theme.Key.Render("k") + ": kill | b: back")
-
+	hints := []string{"↑↓ Navigate", "k Kill", "b Back"}
+	s.WriteString(a.theme.StatusBar("Kill Server", hints, a.terminalWidth()))
 	return s.String()
 }
 
@@ -1622,25 +1706,29 @@ func (a *App) renderSearchView() string {
 
 	if a.searchBusy {
 		s.WriteString(a.theme.Warning.Render(fmt.Sprintf("%s Searching for %s...", a.spin.View(), a.searchQuery)))
-		s.WriteString("\n\nb: cancel")
+		hints := []string{"b Cancel"}
+		s.WriteString(a.theme.StatusBar("Searching", hints, a.terminalWidth()))
 		return s.String()
 	}
 
 	if a.downloadBusy {
-		s.WriteString("\n  " + a.theme.Warning.Render(fmt.Sprintf("%s Downloading: %s", a.spin.View(), a.downloading)) + "\n\n")
-		s.WriteString(a.theme.Faint.Render(fmt.Sprintf("  %s: cancel download | %s: continue in background\n\n", a.theme.Key.Render("b"), a.theme.Key.Render("esc"))))
+		s.WriteString("\n  " + a.theme.Warning.Render(fmt.Sprintf("%s Downloading: %s", a.spin.View(), a.downloading)) + "\n")
+		hints := []string{"b Cancel", "esc Background"}
+		s.WriteString(a.theme.StatusBar("Downloading", hints, a.terminalWidth()))
 		return s.String()
 	}
 
 	if len(a.searchResults) == 0 && a.searchQuery != "" {
 		s.WriteString(a.theme.Faint.Render("  No results found.\n"))
-		s.WriteString("\n↑↓: navigate | enter: pick quant | b: go back")
+		hints := []string{"↑↓ Navigate", "Enter Quant", "b Back"}
+		s.WriteString(a.theme.StatusBar("Search", hints, a.terminalWidth()))
 		return s.String()
 	}
 
 	if len(a.searchResults) == 0 {
 		s.WriteString(a.theme.Faint.Render("  Type a query and press Enter to search.\n"))
-		s.WriteString("\nb: go back")
+		hints := []string{"b Back"}
+		s.WriteString(a.theme.StatusBar("Search", hints, a.terminalWidth()))
 		return s.String()
 	}
 
@@ -1653,8 +1741,9 @@ func (a *App) renderSearchView() string {
 		resultLines += fmt.Sprintf("  %s %s (%d downloads, %d likes)\n", prefix, r.ModelID, r.Downloads, r.Likes)
 	}
 
-	s.WriteString(a.theme.Panel.Render(a.theme.PanelTitle.Render("Results") + "\n" + resultLines))
-	s.WriteString("\n↑↓: navigate | enter: pick quant | b: go back")
+	s.WriteString(a.theme.PanelOrange.Render(a.theme.PanelTitle.Render("Results") + "\n" + resultLines))
+	hints := []string{"↑↓ Navigate", "Enter Quant", "b Back"}
+	s.WriteString(a.theme.StatusBar("Search Results", hints, a.terminalWidth()))
 	return s.String()
 }
 
@@ -1668,13 +1757,15 @@ func (a *App) renderQuantsView() string {
 
 	if a.searchBusy {
 		s.WriteString(a.theme.Warning.Render(fmt.Sprintf("%s Fetching files...", a.spin.View())))
-		s.WriteString("\n\nb: cancel")
+		hints := []string{"b Cancel"}
+		s.WriteString(a.theme.StatusBar("Fetching", hints, a.terminalWidth()))
 		return s.String()
 	}
 
 	if len(a.repoFiles) == 0 {
 		s.WriteString(a.theme.Faint.Render("  No GGUF files found in this repo.\n"))
-		s.WriteString("\nb: go back")
+		hints := []string{"b Back"}
+		s.WriteString(a.theme.StatusBar("Quants", hints, a.terminalWidth()))
 		return s.String()
 	}
 
@@ -1713,12 +1804,14 @@ func (a *App) renderQuantsView() string {
 		fileLines += fmt.Sprintf("  %s %s (%s)\n", prefix, f.Filename, server.FormatSize(f.Size))
 	}
 
-	s.WriteString(a.theme.Panel.Render(a.theme.PanelTitle.Render("Available Files") + "\n" + fileLines))
+	s.WriteString(a.theme.PanelBlue.Render(a.theme.PanelTitle.Render("Available Files") + "\n" + fileLines))
+	hints := []string{"↑↓ Navigate", "Enter Add", "b Back"}
 	if len(a.repoFiles) > maxLines {
-		s.WriteString(fmt.Sprintf("\nShowing %d-%d of %d | ↑↓: navigate | enter: add to catalog | b: go back",
+		s.WriteString(fmt.Sprintf("Showing %d-%d of %d",
 			a.fileScrollOffset+1, min(a.fileScrollOffset+maxLines, len(a.repoFiles)), len(a.repoFiles)))
+		s.WriteString(a.theme.StatusBar("Quants", hints, a.terminalWidth()))
 	} else {
-		s.WriteString("\n↑↓: navigate | enter: add to catalog | b: go back")
+		s.WriteString(a.theme.StatusBar("Quants", hints, a.terminalWidth()))
 	}
 	return s.String()
 }
