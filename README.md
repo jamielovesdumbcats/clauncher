@@ -15,6 +15,7 @@ Built with the [Charmbracelet](https://charm.land) ecosystem: Bubble Tea, Lip Gl
 - **Real-time GPU Stats**: Live ROCm or NVIDIA GPU metrics panel showing temperature, memory, and utilization.
 - **Real-time Logs**: Monitor model output and server status directly within the interface.
 - **Model Benchmarking**: Benchmark models for tokens/second and memory usage.
+- **Model Management**: Delete models from your HuggingFace cache to free up disk space.
 - **Process Control**: Start, stop, and manage the lifecycle of your running models.
 - **Auto-Config for AI Tools**: Automatically sets up config files for Claude Code, Opencode, and Crush to connect to your local llama server.
 - **Developer Friendly**: Includes a built-in `MockRunner` for rapid UI development and testing.

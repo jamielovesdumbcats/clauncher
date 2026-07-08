@@ -138,6 +138,8 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
 - [x] Pre-configured model list for downloads (stored in repo)
 - [x] Model benchmarking
 - [x] Auto-setup `~/.claude/settings.json` for local usage (needs testing)
+- [x] Improved HF search with `library=gguf&apps=llama.cpp` filters
+- [x] Model deletion from cache (`x` key in selection view)
 
 ---
 
