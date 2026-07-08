@@ -66,6 +66,15 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
 - `ViewQuants`: triggered by Enter on a search result. Lists GGUF quant files from the repo's `main` branch. Arrow keys navigate, Enter adds to catalog. `b`/Esc returns to search (restores focus to search input).
 - Key routing: `Update()` pre-switches on `ViewSearch`/`ViewQuants` to intercept arrow/enter/back/quit keys, routing all other keys to the textinput.
 
+### Model Downloads
+
+- `DownloadModel()` uses `llama download -hf <repo:quant>` command with a cancellable context
+- Download runs in a `tea.Cmd` closure with 30/60 min timeout based on model size
+- `downloadBusy` flag + spinner show progress in catalog view and selection view
+- `downloadCancel` context.CancelFunc allows cancellation via `b` key (goBack)
+- `IsModelDownloaded()` pre-check skips already-cached models
+- Download complete triggers model list refresh via `refreshModels()`
+
 ### Launch Methods (CLI, Claude, Opencode, Crush)
 
 - `launchLlamaCLI`: tries terminal emulators (gnome-terminal, kitty, alacritty, etc.), falls back to foreground `sh -c`.
@@ -119,7 +128,7 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
 - [x] Search UX — auto-blur input after results, focus restore on back nav, spinner during search
 - [x] Model catalog in user config (`~/.clauncher/models.json`)
 - [x] Catalog download status indicators (✓/✗)
-- [x] Search key (`s`) in selection view bottom bar
+- [x] Model downloads from catalog — cancellable via context, spinner, progress feedback
 - [x] Arrow key navigation for model and option selection
 - [x] Configurable port and context length via UI
 - [x] Find and kill existing llama processes before starting new ones

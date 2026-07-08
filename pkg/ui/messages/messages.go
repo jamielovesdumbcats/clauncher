@@ -81,3 +81,8 @@ type ModelAddedToCatalogMsg struct {
 	Model server.CatalogModel
 	Error error
 }
+
+// SuccessMsg is sent for success notifications.
+type SuccessMsg struct {
+	Message string
+}

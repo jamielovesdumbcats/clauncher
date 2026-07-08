@@ -92,10 +92,13 @@ type App struct {
 	cursorPos int // model or option index in selection/launch views
 
 	// Catalog state
-	catalog       []server.CatalogModel
-	catalogCursor int
-	downloading   string
-	downloadBusy  bool
+	catalog            []server.CatalogModel
+	catalogCursor      int
+	downloading        string
+	downloadBusy       bool
+	downloadCancel     context.CancelFunc
+	downloadCancelled  bool
+	downloadProgress   string
 
 	// Running llama server detection
 	runtimeServers []server.RunningLlamaProcess
@@ -199,7 +202,27 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.String() == "ctrl+c" {
 				return a, tea.Quit
 			}
-			if m.String() == "b" || m.String() == "esc" {
+			if m.String() == "b" && a.downloadBusy {
+				if a.downloadCancel != nil {
+					a.downloadCancel()
+				}
+				a.downloadCancelled = true
+				a.downloadBusy = false
+				a.downloadCancel = nil
+				a.downloading = ""
+				a.currentView = ViewSelection
+				a.err = nil
+				return a, nil
+			}
+			if m.String() == "b" && !a.searchInput.Focused() {
+				return a, a.goBack()
+			}
+			if m.String() == "esc" {
+				if a.downloadBusy {
+					a.currentView = ViewSelection
+					a.err = nil
+					return a, nil
+				}
 				return a, a.goBack()
 			}
 			if m.String() == "enter" && a.searchInput.Value() != "" && !a.searchBusy {
@@ -224,7 +247,30 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.searchCursor++
 				return a, nil
 			}
-			if m.String() == "enter" && len(a.searchResults) > 0 && a.searchCursor < len(a.searchResults) {
+			if m.String() == "enter" && len(a.searchResults) > 0 && a.searchCursor < len(a.searchResults) && !a.searchBusy && !a.downloadBusy {
+				r := a.searchResults[a.searchCursor]
+				hfRepo := r.ModelID + ":Q4_K_M"
+				displayName := strings.ReplaceAll(r.ModelID, "/", " - ") + " (Q4_K_M)"
+				if server.IsModelDownloaded(hfRepo) {
+					a.err = fmt.Errorf("%s is already downloaded", displayName)
+					return a, nil
+				}
+				a.downloading = displayName
+				a.downloadBusy = true
+				a.downloadProgress = ""
+				a.downloadCancelled = false
+				ctx, cancel := context.WithTimeout(a.ctx, 60*time.Minute)
+				a.downloadCancel = cancel
+				return a, tea.Batch(
+					func() tea.Msg {
+						defer cancel()
+						err := server.DownloadModel(ctx, hfRepo)
+						return messages.DownloadCompleteMsg{Model: displayName, Error: err}
+					},
+					tickSpinner(),
+				)
+			}
+			if m.String() == "q" && len(a.searchResults) > 0 && a.searchCursor < len(a.searchResults) && !a.searchBusy && !a.downloadBusy {
 				a.selectedRepo = a.searchResults[a.searchCursor].ModelID
 				a.repoFiles = nil
 				a.fileCursor = 0
@@ -300,9 +346,34 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.searchInput.Focus()
 				return a, nil
 			}
-		case "b", "esc":
-			// Go back to selection from dashboard or benchmark view
-			if a.currentView == ViewDashboard || a.currentView == ViewLaunchOptions || a.currentView == ViewBenchmark || a.currentView == ViewLaunchConfig || a.currentView == ViewCatalog || a.currentView == ViewKillServer || a.currentView == ViewSearch || a.currentView == ViewQuants {
+		case "b":
+			// Cancel download if in progress, then go back
+			if a.currentView == ViewCatalog && a.downloadBusy {
+				if a.downloadCancel != nil {
+					a.downloadCancel()
+				}
+				a.downloadCancelled = true
+				a.downloadBusy = false
+				a.downloadCancel = nil
+				a.downloading = ""
+				a.currentView = ViewSelection
+				a.err = nil
+				return a, nil
+			}
+			if a.currentView == ViewDashboard || a.currentView == ViewLaunchOptions || a.currentView == ViewBenchmark || a.currentView == ViewLaunchConfig || a.currentView == ViewCatalog || a.currentView == ViewKillServer || a.currentView == ViewQuants {
+				return a, a.goBack()
+			}
+		case "esc":
+			// Navigate away, keep download running in background
+			if a.currentView == ViewCatalog && a.downloadBusy {
+				a.currentView = ViewSelection
+				a.err = nil
+				return a, nil
+			}
+			if a.currentView == ViewDashboard || a.currentView == ViewLaunchOptions || a.currentView == ViewBenchmark || a.currentView == ViewLaunchConfig || a.currentView == ViewKillServer || a.currentView == ViewSearch || a.currentView == ViewQuants {
+				return a, a.goBack()
+			}
+			if a.currentView == ViewCatalog {
 				return a, a.goBack()
 			}
 		case "m":
@@ -459,13 +530,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				a.downloading = m.DisplayName
 				a.downloadBusy = true
+				a.downloadProgress = ""
+				timeout := 30 * time.Minute
+				if m.SizeGB > 30 {
+					timeout = 60 * time.Minute
+				}
+				ctx, cancel := context.WithTimeout(a.ctx, timeout)
+				a.downloadCancel = cancel
 				return a, tea.Batch(
 					func() tea.Msg {
-						timeout := 30 * time.Minute
-						if m.SizeGB > 30 {
-							timeout = 60 * time.Minute
-						}
-						ctx, cancel := context.WithTimeout(a.ctx, timeout)
 						defer cancel()
 						err := server.DownloadModel(ctx, m.HFRepo)
 						return messages.DownloadCompleteMsg{Model: m.DisplayName, Error: err}
@@ -657,13 +730,21 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.DownloadCompleteMsg:
 		a.downloadBusy = false
+		a.downloadCancel = nil
+		if a.downloadCancelled {
+			a.downloadCancelled = false
+			a.downloading = ""
+			return a, nil
+		}
 		if m.Error != nil {
 			a.err = fmt.Errorf("download failed: %w", m.Error)
 			return a, nil
 		}
 		a.downloading = ""
 		// Refresh model list after download
-		return a, a.refreshModels()
+		return a, tea.Batch(a.refreshModels(), func() tea.Msg {
+			return messages.SuccessMsg{Message: fmt.Sprintf("Downloaded %s successfully", m.Model)}
+		})
 
 	case messages.SearchCompleteMsg:
 		a.searchBusy = false
@@ -695,6 +776,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.currentView = ViewCatalog
+
+	case messages.SuccessMsg:
+		a.downloadProgress = m.Message
+		return a, nil
 		a.catalogCursor = len(a.catalog) - 1
 		return a, nil
 	}
@@ -911,6 +996,11 @@ func (a *App) renderSelectionView() string {
 	// Loading indicator
 	if a.refreshing {
 		s.WriteString(a.theme.Info.Render("  ↻ Refreshing model list...\n\n"))
+	}
+
+	// Download progress indicator
+	if a.downloadBusy {
+		s.WriteString(a.theme.Warning.Render(fmt.Sprintf("  %s Downloading: %s\n\n", a.spin.View(), a.downloading)))
 	}
 
 	// Models panel
@@ -1400,8 +1490,13 @@ func (a *App) renderCatalogView() string {
 	s.WriteString(renderStatusPanes(a))
 
 	if a.downloadBusy {
-		s.WriteString(a.theme.Warning.Render(fmt.Sprintf("%s Downloading %s... Press 'b' to cancel", a.spin.View(), a.downloading)))
+		s.WriteString("\n  " + a.theme.Warning.Render(fmt.Sprintf("%s Downloading: %s", a.spin.View(), a.downloading)) + "\n\n")
+		s.WriteString(a.theme.Faint.Render(fmt.Sprintf("  %s: cancel download | %s: continue in background\n\n", a.theme.Key.Render("b"), a.theme.Key.Render("esc"))))
 		return s.String()
+	}
+
+	if a.downloadProgress != "" {
+		s.WriteString("\n  " + a.theme.Success.Render("✓ " + a.downloadProgress) + "\n\n")
 	}
 
 	if len(a.catalog) == 0 {
@@ -1511,9 +1606,15 @@ func (a *App) renderSearchView() string {
 		return s.String()
 	}
 
+	if a.downloadBusy {
+		s.WriteString("\n  " + a.theme.Warning.Render(fmt.Sprintf("%s Downloading: %s", a.spin.View(), a.downloading)) + "\n\n")
+		s.WriteString(a.theme.Faint.Render(fmt.Sprintf("  %s: cancel download | %s: continue in background\n\n", a.theme.Key.Render("b"), a.theme.Key.Render("esc"))))
+		return s.String()
+	}
+
 	if len(a.searchResults) == 0 && a.searchQuery != "" {
 		s.WriteString(a.theme.Faint.Render("  No results found.\n"))
-		s.WriteString("\n↑↓: navigate | enter: select repo | b: go back")
+		s.WriteString("\n↑↓: navigate | enter: download | q: browse quants | b: go back")
 		return s.String()
 	}
 
@@ -1533,7 +1634,7 @@ func (a *App) renderSearchView() string {
 	}
 
 	s.WriteString(a.theme.Panel.Render(a.theme.PanelTitle.Render("Results") + "\n" + resultLines))
-	s.WriteString("\n↑↓: navigate | enter: select repo | b: go back")
+	s.WriteString("\n↑↓: navigate | enter: download Q4_K_M | q: browse quants | b: go back")
 	return s.String()
 }
 
