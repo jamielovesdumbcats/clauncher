@@ -445,7 +445,7 @@ func SearchHFModels(query string) ([]SearchHFModel, error) {
 	if query == "" {
 		return nil, nil
 	}
-	url := fmt.Sprintf("https://huggingface.co/api/models?search=%s&sort=downloads&direction=-1&limit=20", query)
+	url := fmt.Sprintf("https://huggingface.co/api/models?search=%s&filter=gguf&library=gguf&apps=llama.cpp&sort=downloads&direction=-1&limit=20", query)
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search HuggingFace: %w", err)
@@ -503,13 +503,18 @@ func GetHFModelFiles(repoID string) ([]HFFile, error) {
 
 	var ggufs []HFFile
 	for _, f := range files {
-		if strings.HasSuffix(strings.ToLower(f.Path), ".gguf") {
-			name := strings.TrimSuffix(f.Path, ".gguf")
-			ggufs = append(ggufs, HFFile{
-				Filename: name,
-				Size:     f.Size,
-			})
+		if !strings.HasSuffix(strings.ToLower(f.Path), ".gguf") {
+			continue
 		}
+		if strings.Contains(f.Path, "/") {
+			// Skip files in subdirectories — llama download only works with root-level files
+			continue
+		}
+		name := strings.TrimSuffix(f.Path, ".gguf")
+		ggufs = append(ggufs, HFFile{
+			Filename: name,
+			Size:     f.Size,
+		})
 	}
 	return ggufs, nil
 }

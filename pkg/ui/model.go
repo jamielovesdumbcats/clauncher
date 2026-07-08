@@ -133,7 +133,8 @@ type App struct {
 	searchQuery   string
 	repoFiles     []server.HFFile
 	selectedRepo  string
-	fileCursor    int
+	fileCursor       int
+	fileScrollOffset int
 	searchBusy    bool
 
 	searchCursor int
@@ -225,7 +226,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return a, a.goBack()
 			}
-			if m.String() == "enter" && a.searchInput.Value() != "" && !a.searchBusy {
+			if m.String() == "enter" && a.searchInput.Focused() && a.searchInput.Value() != "" && !a.searchBusy {
 				a.searchQuery = a.searchInput.Value()
 				a.searchBusy = true
 				a.searchResults = nil
@@ -247,33 +248,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.searchCursor++
 				return a, nil
 			}
-			if m.String() == "enter" && len(a.searchResults) > 0 && a.searchCursor < len(a.searchResults) && !a.searchBusy && !a.downloadBusy {
-				r := a.searchResults[a.searchCursor]
-				hfRepo := r.ModelID + ":Q4_K_M"
-				displayName := strings.ReplaceAll(r.ModelID, "/", " - ") + " (Q4_K_M)"
-				if server.IsModelDownloaded(hfRepo) {
-					a.err = fmt.Errorf("%s is already downloaded", displayName)
-					return a, nil
-				}
-				a.downloading = displayName
-				a.downloadBusy = true
-				a.downloadProgress = ""
-				a.downloadCancelled = false
-				ctx, cancel := context.WithTimeout(a.ctx, 60*time.Minute)
-				a.downloadCancel = cancel
-				return a, tea.Batch(
-					func() tea.Msg {
-						defer cancel()
-						err := server.DownloadModel(ctx, hfRepo)
-						return messages.DownloadCompleteMsg{Model: displayName, Error: err}
-					},
-					tickSpinner(),
-				)
-			}
-			if m.String() == "q" && len(a.searchResults) > 0 && a.searchCursor < len(a.searchResults) && !a.searchBusy && !a.downloadBusy {
+		if m.String() == "enter" && len(a.searchResults) > 0 && a.searchCursor < len(a.searchResults) && !a.searchBusy && !a.downloadBusy {
 				a.selectedRepo = a.searchResults[a.searchCursor].ModelID
 				a.repoFiles = nil
 				a.fileCursor = 0
+				a.fileScrollOffset = 0
 				a.currentView = ViewQuants
 				a.searchBusy = true
 				return a, tea.Batch(
@@ -285,7 +264,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				)
 			}
 			var cmd tea.Cmd
-			a.searchInput, cmd = a.searchInput.Update(msg)
+			if !a.searchInput.Focused() {
+				a.searchInput, cmd = a.searchInput.Update(msg)
+			} else {
+				// Don't send Enter to textinput when results are shown
+				if m.Type != tea.KeyEnter || len(a.searchResults) == 0 {
+					a.searchInput, cmd = a.searchInput.Update(msg)
+				}
+			}
 			if cmd != nil {
 				return a, cmd
 			}
@@ -826,6 +812,8 @@ func (a *App) goBack() tea.Cmd {
 	} else if a.currentView == ViewBenchmark || a.currentView == ViewCatalog || a.currentView == ViewKillServer || a.currentView == ViewSearch || a.currentView == ViewQuants {
 		if a.currentView == ViewQuants {
 			a.currentView = ViewSearch
+			a.fileCursor = 0
+			a.fileScrollOffset = 0
 			a.searchInput.Focus()
 			return nil
 		}
@@ -1614,7 +1602,7 @@ func (a *App) renderSearchView() string {
 
 	if len(a.searchResults) == 0 && a.searchQuery != "" {
 		s.WriteString(a.theme.Faint.Render("  No results found.\n"))
-		s.WriteString("\n↑↓: navigate | enter: download | q: browse quants | b: go back")
+		s.WriteString("\n↑↓: navigate | enter: pick quant | b: go back")
 		return s.String()
 	}
 
@@ -1634,7 +1622,7 @@ func (a *App) renderSearchView() string {
 	}
 
 	s.WriteString(a.theme.Panel.Render(a.theme.PanelTitle.Render("Results") + "\n" + resultLines))
-	s.WriteString("\n↑↓: navigate | enter: download Q4_K_M | q: browse quants | b: go back")
+	s.WriteString("\n↑↓: navigate | enter: pick quant | b: go back")
 	return s.String()
 }
 
@@ -1659,7 +1647,33 @@ func (a *App) renderQuantsView() string {
 	}
 
 	fileLines := ""
-	for i, f := range a.repoFiles {
+	const maxLines = 15
+	total := len(a.repoFiles)
+	// Clamp cursor to valid range
+	if a.fileCursor < 0 {
+		a.fileCursor = 0
+	}
+	if a.fileCursor >= total {
+		a.fileCursor = max(0, total-1)
+	}
+	if total > maxLines {
+		half := maxLines / 2
+		if a.fileCursor < half {
+			a.fileScrollOffset = 0
+		} else if a.fileCursor >= total-half {
+			a.fileScrollOffset = total - maxLines
+		} else {
+			a.fileScrollOffset = a.fileCursor - half
+		}
+	} else {
+		a.fileScrollOffset = 0
+	}
+	a.fileScrollOffset = max(0, a.fileScrollOffset)
+	if total > maxLines {
+		a.fileScrollOffset = min(a.fileScrollOffset, total-maxLines)
+	}
+	for i := a.fileScrollOffset; i < a.fileScrollOffset+maxLines && i < total; i++ {
+		f := a.repoFiles[i]
 		prefix := a.theme.Faint.Render(" ")
 		if i == a.fileCursor {
 			prefix = a.theme.Success.Render("▸")
@@ -1668,6 +1682,11 @@ func (a *App) renderQuantsView() string {
 	}
 
 	s.WriteString(a.theme.Panel.Render(a.theme.PanelTitle.Render("Available Files") + "\n" + fileLines))
-	s.WriteString("\n↑↓: navigate | enter: add to catalog | b: go back")
+	if len(a.repoFiles) > maxLines {
+		s.WriteString(fmt.Sprintf("\nShowing %d-%d of %d | ↑↓: navigate | enter: add to catalog | b: go back",
+			a.fileScrollOffset+1, min(a.fileScrollOffset+maxLines, len(a.repoFiles)), len(a.repoFiles)))
+	} else {
+		s.WriteString("\n↑↓: navigate | enter: add to catalog | b: go back")
+	}
 	return s.String()
 }
