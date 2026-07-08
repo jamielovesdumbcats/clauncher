@@ -1,0 +1,6 @@
+# Build output
+clauncher
+
+# IDE
+.idea/
+.vscode/

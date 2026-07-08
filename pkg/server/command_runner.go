@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -430,6 +432,108 @@ func (r *MockRunner) ClearError() {
 	r.err = nil
 }
 
+// SearchHFModel is a search result from the HF API.
+type SearchHFModel struct {
+	ModelID   string
+	Likes     int
+	Downloads int
+	Tags      []string
+}
+
+// SearchHFModels searches HuggingFace for GGUF models matching the query.
+func SearchHFModels(query string) ([]SearchHFModel, error) {
+	if query == "" {
+		return nil, nil
+	}
+	url := fmt.Sprintf("https://huggingface.co/api/models?search=%s&sort=downloads&direction=-1&limit=20", query)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search HuggingFace: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HuggingFace API returned status %d", resp.StatusCode)
+	}
+
+	var results []struct {
+		ModelID   string   `json:"modelId"`
+		Likes     int      `json:"likes"`
+		Downloads int      `json:"downloads"`
+		Tags      []string `json:"tags"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		return nil, fmt.Errorf("failed to decode search results: %w", err)
+	}
+
+	var models []SearchHFModel
+	for _, r := range results {
+		models = append(models, SearchHFModel{
+			ModelID:   r.ModelID,
+			Likes:     r.Likes,
+			Downloads: r.Downloads,
+			Tags:      r.Tags,
+		})
+	}
+	return models, nil
+}
+
+// GetHFModelFiles lists .gguf files in a HuggingFace repo.
+func GetHFModelFiles(repoID string) ([]HFFile, error) {
+	url := fmt.Sprintf("https://huggingface.co/api/models/%s/tree/main?recursive=true", repoID)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch repo files: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HuggingFace API returned status %d", resp.StatusCode)
+	}
+
+	var files []struct {
+		Path string `json:"path"`
+		Size int64  `json:"size"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
+		return nil, fmt.Errorf("failed to decode repo files: %w", err)
+	}
+
+	var ggufs []HFFile
+	for _, f := range files {
+		if strings.HasSuffix(strings.ToLower(f.Path), ".gguf") {
+			name := strings.TrimSuffix(f.Path, ".gguf")
+			ggufs = append(ggufs, HFFile{
+				Filename: name,
+				Size:     f.Size,
+			})
+		}
+	}
+	return ggufs, nil
+}
+
+// FormatSize returns a human-readable file size string.
+func FormatSize(bytes int64) string {
+	if bytes == 0 {
+		return "0 B"
+	}
+	units := []string{"B", "KB", "MB", "GB"}
+	unit := int(math.Floor(math.Log10(float64(bytes)) / math.Log10(1024)))
+	if unit >= len(units) {
+		unit = len(units) - 1
+	}
+	size := float64(bytes) / math.Pow(1024, float64(unit))
+	return fmt.Sprintf("%.1f %s", size, units[unit])
+}
+
+// HFFile represents a .gguf file in a HuggingFace repo.
+type HFFile struct {
+	Filename string
+	Size     int64
+}
+
 // CatalogModel represents a model available for download from HuggingFace.
 type CatalogModel struct {
 	HFRepo      string   `json:"hf_repo"`
@@ -490,6 +594,23 @@ func LoadCatalog() ([]CatalogModel, error) {
 		return nil, fmt.Errorf("failed to parse catalog: %w", err)
 	}
 	return cat.Models, nil
+}
+
+// SaveCatalog writes the model catalog to ~/.clauncher/models.json.
+func SaveCatalog(models []CatalogModel) error {
+	configDir, err := CatalogConfigDir()
+	if err != nil {
+		return err
+	}
+	configPath := filepath.Join(configDir, "models.json")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+	data, err := json.MarshalIndent(Catalog{Models: models}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal catalog: %w", err)
+	}
+	return os.WriteFile(configPath, data, 0o644)
 }
 
 // IsModelDownloaded checks if the HF repo already has blob files in the cache.

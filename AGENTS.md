@@ -57,8 +57,14 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
 ### Bubble Tea Model
 
 - `App` is the root `tea.Model`. Views are simple string renderers; state transitions happen in `Update()` via `currentView`.
-- Three view states: `ViewSelection`, `ViewDashboard`, `ViewLaunchOptions`.
+- View states: `ViewSelection`, `ViewDashboard`, `ViewLaunchOptions`, `ViewBenchmark`, `ViewCatalog`, `ViewSearch`, `ViewQuants`, `ViewKillServer`.
 - Errors are stored in `a.err` and displayed at the top of `View()`. Clear `a.err` on navigation.
+
+### Search & Quant Views
+
+- `ViewSearch`: triggered by `s` key. Uses a `textinput` for query. Results show repo IDs with stars and size. Arrow keys navigate results, Enter adds selected model to catalog (blurs input first). `b`/Esc returns to selection.
+- `ViewQuants`: triggered by Enter on a search result. Lists GGUF quant files from the repo's `main` branch. Arrow keys navigate, Enter adds to catalog. `b`/Esc returns to search (restores focus to search input).
+- Key routing: `Update()` pre-switches on `ViewSearch`/`ViewQuants` to intercept arrow/enter/back/quit keys, routing all other keys to the textinput.
 
 ### Launch Methods (CLI, Claude, Opencode, Crush)
 
@@ -109,8 +115,11 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
 
 ## Implemented Features
 
+- [x] HuggingFace model search — search repos, browse quants, add to catalog
+- [x] Search UX — auto-blur input after results, focus restore on back nav, spinner during search
 - [x] Model catalog in user config (`~/.clauncher/models.json`)
 - [x] Catalog download status indicators (✓/✗)
+- [x] Search key (`s`) in selection view bottom bar
 - [x] Arrow key navigation for model and option selection
 - [x] Configurable port and context length via UI
 - [x] Find and kill existing llama processes before starting new ones
@@ -127,8 +136,8 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
 
 
 ### TODO
-- [ ] HuggingFace model discovery — check for new models, list in TUI, offer to pull (lower priority)
-- [ ] UI enhancements — much more needed to improve look using Charm libraries (partially done)
+- [ ] UI enhancements — more needed to improve look using Charm libraries
+
 
 ### Future
 - [ ] Ollama as alternative backend

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"clauncher/pkg/model"
+	"clauncher/pkg/server"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -60,5 +61,23 @@ type BenchmarkCompleteMsg struct {
 // DownloadCompleteMsg is sent when a model download finishes.
 type DownloadCompleteMsg struct {
 	Model string
+	Error error
+}
+
+// SearchCompleteMsg is sent when HuggingFace search results are returned.
+type SearchCompleteMsg struct {
+	Results []server.SearchHFModel
+	Error   error
+}
+
+// FilesCompleteMsg is sent when repo files are fetched.
+type FilesCompleteMsg struct {
+	Files []server.HFFile
+	Error error
+}
+
+// ModelAddedToCatalogMsg is sent when a model is added to the catalog.
+type ModelAddedToCatalogMsg struct {
+	Model server.CatalogModel
 	Error error
 }

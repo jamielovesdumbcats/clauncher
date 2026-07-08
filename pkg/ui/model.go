@@ -62,6 +62,8 @@ const (
 	ViewLaunchConfig
 	ViewCatalog
 	ViewKillServer
+	ViewSearch
+	ViewQuants
 )
 
 // App is the root model for the application.
@@ -121,6 +123,17 @@ type App struct {
 
 	// Spinner for busy states
 	spin spinner.Model
+
+	// Search state
+	searchInput   textinput.Model
+	searchResults []server.SearchHFModel
+	searchQuery   string
+	repoFiles     []server.HFFile
+	selectedRepo  string
+	fileCursor    int
+	searchBusy    bool
+
+	searchCursor int
 }
 
 // NewApp initializes a new application instance.
@@ -145,6 +158,10 @@ func NewApp(models []model.Model, runner server.ProcessRunner, runningServers []
 	workDirInput.Placeholder = home
 	workDirInput.SetValue(home)
 
+	searchInput := textinput.New()
+	searchInput.Placeholder = "Search HuggingFace for GGUF models..."
+	searchInput.Focus()
+
 	return &App{
 		currentView:      ViewSelection,
 		theme:            theme.NewTheme(),
@@ -163,6 +180,9 @@ func NewApp(models []model.Model, runner server.ProcessRunner, runningServers []
 		gpuStats:         server.GetGPUStats(),
 		catalog:          catalog,
 		spin:             spin,
+		searchInput:      searchInput,
+		searchResults:    []server.SearchHFModel{},
+		repoFiles:        []server.HFFile{},
 	}
 }
 
@@ -175,6 +195,90 @@ func (a *App) Init() tea.Cmd {
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.KeyMsg:
+		if a.currentView == ViewSearch {
+			if m.String() == "ctrl+c" {
+				return a, tea.Quit
+			}
+			if m.String() == "b" || m.String() == "esc" {
+				return a, a.goBack()
+			}
+			if m.String() == "enter" && a.searchInput.Value() != "" && !a.searchBusy {
+				a.searchQuery = a.searchInput.Value()
+				a.searchBusy = true
+				a.searchResults = nil
+				a.searchCursor = 0
+				a.searchInput.Blur()
+				return a, tea.Batch(
+					func() tea.Msg {
+						results, err := server.SearchHFModels(a.searchQuery)
+						return messages.SearchCompleteMsg{Results: results, Error: err}
+					},
+					tickSpinner(),
+				)
+			}
+			if m.String() == "up" && len(a.searchResults) > 0 && a.searchCursor > 0 {
+				a.searchCursor--
+				return a, nil
+			}
+			if m.String() == "down" && len(a.searchResults) > 0 && a.searchCursor < len(a.searchResults)-1 {
+				a.searchCursor++
+				return a, nil
+			}
+			if m.String() == "enter" && len(a.searchResults) > 0 && a.searchCursor < len(a.searchResults) {
+				a.selectedRepo = a.searchResults[a.searchCursor].ModelID
+				a.repoFiles = nil
+				a.fileCursor = 0
+				a.currentView = ViewQuants
+				a.searchBusy = true
+				return a, tea.Batch(
+					func() tea.Msg {
+						files, err := server.GetHFModelFiles(a.selectedRepo)
+						return messages.FilesCompleteMsg{Files: files, Error: err}
+					},
+					tickSpinner(),
+				)
+			}
+			var cmd tea.Cmd
+			a.searchInput, cmd = a.searchInput.Update(msg)
+			if cmd != nil {
+				return a, cmd
+			}
+			return a, nil
+		}
+		if a.currentView == ViewQuants {
+			if m.String() == "ctrl+c" {
+				return a, tea.Quit
+			}
+			if m.String() == "b" || m.String() == "esc" {
+				return a, a.goBack()
+			}
+			if m.String() == "up" && a.fileCursor > 0 {
+				a.fileCursor--
+				return a, nil
+			}
+			if m.String() == "down" && a.fileCursor < len(a.repoFiles)-1 {
+				a.fileCursor++
+				return a, nil
+			}
+			if m.String() == "enter" && len(a.repoFiles) > 0 && a.fileCursor < len(a.repoFiles) {
+				quant := a.repoFiles[a.fileCursor]
+				return a, func() tea.Msg {
+					hfRepo := a.selectedRepo + ":" + quant.Filename
+					displayName := strings.ReplaceAll(a.selectedRepo, "/", " - ")
+					displayName = displayName + " (" + quant.Filename + ")"
+					sizeGB := float64(quant.Size) / (1024 * 1024 * 1024)
+					return messages.ModelAddedToCatalogMsg{
+						Model: server.CatalogModel{
+							HFRepo:      hfRepo,
+							DisplayName: displayName,
+							SizeGB:      sizeGB,
+							Tags:        a.searchResults[a.searchCursor].Tags,
+						},
+					}
+				}
+			}
+			return a, nil
+		}
 		switch m.String() {
 		case "ctrl+c", "q":
 			if a.currentView == ViewDashboard {
@@ -188,9 +292,17 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.currentView == ViewDashboard {
 				return a, a.toggleProcess()
 			}
+			if a.currentView == ViewSelection {
+				a.searchInput.SetValue("")
+				a.searchResults = nil
+				a.searchCursor = 0
+				a.currentView = ViewSearch
+				a.searchInput.Focus()
+				return a, nil
+			}
 		case "b", "esc":
 			// Go back to selection from dashboard or benchmark view
-			if a.currentView == ViewDashboard || a.currentView == ViewLaunchOptions || a.currentView == ViewBenchmark || a.currentView == ViewLaunchConfig || a.currentView == ViewCatalog || a.currentView == ViewKillServer {
+			if a.currentView == ViewDashboard || a.currentView == ViewLaunchOptions || a.currentView == ViewBenchmark || a.currentView == ViewLaunchConfig || a.currentView == ViewCatalog || a.currentView == ViewKillServer || a.currentView == ViewSearch || a.currentView == ViewQuants {
 				return a, a.goBack()
 			}
 		case "m":
@@ -314,7 +426,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, nil
 		case "enter":
-			// Confirm selection with enter key
 			if a.currentView == ViewSelection && a.cursorPos < len(a.models) {
 				return a, a.selectModel(a.cursorPos)
 			}
@@ -457,12 +568,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		// Tick the spinner during busy states
-		if a.benchmarking || a.downloadBusy {
+		if a.benchmarking || a.downloadBusy || a.searchBusy {
 			var cmd tea.Cmd
 			a.spin, cmd = a.spin.Update(tickMsg{})
-			if cmd != nil {
-				return a, cmd
-			}
+			return a, tea.Batch(cmd, tickSpinner())
 		}
 		return a, nil
 
@@ -555,6 +664,39 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.downloading = ""
 		// Refresh model list after download
 		return a, a.refreshModels()
+
+	case messages.SearchCompleteMsg:
+		a.searchBusy = false
+		if m.Error != nil {
+			a.err = m.Error
+			return a, nil
+		}
+		a.searchResults = m.Results
+		a.searchInput.Blur()
+		return a, nil
+
+	case messages.FilesCompleteMsg:
+		a.searchBusy = false
+		if m.Error != nil {
+			a.err = fmt.Errorf("failed to fetch repo files: %w", m.Error)
+			return a, nil
+		}
+		a.repoFiles = m.Files
+		return a, nil
+
+	case messages.ModelAddedToCatalogMsg:
+		if m.Error != nil {
+			a.err = m.Error
+			return a, nil
+		}
+		a.catalog = append(a.catalog, m.Model)
+		if err := server.SaveCatalog(a.catalog); err != nil {
+			a.err = fmt.Errorf("failed to save catalog: %w", err)
+			return a, nil
+		}
+		a.currentView = ViewCatalog
+		a.catalogCursor = len(a.catalog) - 1
+		return a, nil
 	}
 
 	return a, nil
@@ -596,7 +738,12 @@ func (a *App) goBack() tea.Cmd {
 	} else if a.currentView == ViewDashboard {
 		a.currentView = ViewSelection
 		a.selectedModel = nil
-	} else if a.currentView == ViewBenchmark || a.currentView == ViewCatalog || a.currentView == ViewKillServer {
+	} else if a.currentView == ViewBenchmark || a.currentView == ViewCatalog || a.currentView == ViewKillServer || a.currentView == ViewSearch || a.currentView == ViewQuants {
+		if a.currentView == ViewQuants {
+			a.currentView = ViewSearch
+			a.searchInput.Focus()
+			return nil
+		}
 		a.currentView = ViewSelection
 	}
 	a.err = nil // Clear any error state when returning to selection
@@ -661,6 +808,10 @@ func (a *App) View() string {
 		return a.renderCatalogView()
 	case ViewKillServer:
 		return a.renderKillServerView()
+	case ViewSearch:
+		return a.renderSearchView()
+	case ViewQuants:
+		return a.renderQuantsView()
 	default:
 		return "Unknown View"
 	}
@@ -783,9 +934,10 @@ func (a *App) renderSelectionView() string {
 
 	// Commands panel
 	cmds := ""
-	cmds += fmt.Sprintf("  %s/%s %s | %s %s | %s %s | %s %s | %s %s | %s %s | %s %s\n",
+	cmds += fmt.Sprintf("  %s/%s %s | %s %s | %s %s | %s %s | %s %s | %s %s | %s %s | %s %s\n",
 		a.theme.Key.Render("↑"), a.theme.Key.Render("↓"), "Navigate",
 		a.theme.Key.Render("Enter"), "Select",
+		a.theme.Key.Render("s"), "Search HuggingFace",
 		a.theme.Key.Render("r"), "Refresh",
 		a.theme.Key.Render("k"), "Kill servers",
 		a.theme.Key.Render("d"), "Catalog",
@@ -1341,5 +1493,80 @@ func (a *App) renderKillServerView() string {
 	s.WriteString("\n")
 	s.WriteString("↑↓: navigate | " + a.theme.Key.Render("k") + ": kill | b: back")
 
+	return s.String()
+}
+
+// renderSearchView renders the HuggingFace model search view.
+func (a *App) renderSearchView() string {
+	var s strings.Builder
+	s.WriteString(a.theme.Header.Render("Search HuggingFace"))
+	s.WriteString("\n\n")
+	s.WriteString(renderStatusPanes(a))
+	s.WriteString(a.searchInput.View())
+	s.WriteString("\n\n")
+
+	if a.searchBusy {
+		s.WriteString(a.theme.Warning.Render(fmt.Sprintf("%s Searching for %s...", a.spin.View(), a.searchQuery)))
+		s.WriteString("\n\nb: cancel")
+		return s.String()
+	}
+
+	if len(a.searchResults) == 0 && a.searchQuery != "" {
+		s.WriteString(a.theme.Faint.Render("  No results found.\n"))
+		s.WriteString("\n↑↓: navigate | enter: select repo | b: go back")
+		return s.String()
+	}
+
+	if len(a.searchResults) == 0 {
+		s.WriteString(a.theme.Faint.Render("  Type a query and press Enter to search.\n"))
+		s.WriteString("\nb: go back")
+		return s.String()
+	}
+
+	resultLines := ""
+	for i, r := range a.searchResults {
+		prefix := a.theme.Faint.Render(" ")
+		if i == a.searchCursor {
+			prefix = a.theme.Success.Render("▸")
+		}
+		resultLines += fmt.Sprintf("  %s %s (%d downloads, %d likes)\n", prefix, r.ModelID, r.Downloads, r.Likes)
+	}
+
+	s.WriteString(a.theme.Panel.Render(a.theme.PanelTitle.Render("Results") + "\n" + resultLines))
+	s.WriteString("\n↑↓: navigate | enter: select repo | b: go back")
+	return s.String()
+}
+
+// renderQuantsView renders the quant file selection view.
+func (a *App) renderQuantsView() string {
+	var s strings.Builder
+	s.WriteString(a.theme.Header.Render("Select Quantization"))
+	s.WriteString("\n\n")
+	s.WriteString(a.theme.Primary.Render(fmt.Sprintf("Repo: %s\n\n", a.selectedRepo)))
+	s.WriteString(renderStatusPanes(a))
+
+	if a.searchBusy {
+		s.WriteString(a.theme.Warning.Render(fmt.Sprintf("%s Fetching files...", a.spin.View())))
+		s.WriteString("\n\nb: cancel")
+		return s.String()
+	}
+
+	if len(a.repoFiles) == 0 {
+		s.WriteString(a.theme.Faint.Render("  No GGUF files found in this repo.\n"))
+		s.WriteString("\nb: go back")
+		return s.String()
+	}
+
+	fileLines := ""
+	for i, f := range a.repoFiles {
+		prefix := a.theme.Faint.Render(" ")
+		if i == a.fileCursor {
+			prefix = a.theme.Success.Render("▸")
+		}
+		fileLines += fmt.Sprintf("  %s %s (%s)\n", prefix, f.Filename, server.FormatSize(f.Size))
+	}
+
+	s.WriteString(a.theme.Panel.Render(a.theme.PanelTitle.Render("Available Files") + "\n" + fileLines))
+	s.WriteString("\n↑↓: navigate | enter: add to catalog | b: go back")
 	return s.String()
 }
