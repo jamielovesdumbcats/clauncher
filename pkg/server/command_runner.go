@@ -693,48 +693,20 @@ func DownloadModel(ctx context.Context, hfRepo string) error {
 	log.Printf("[download] binary: %s, repo: %s", llamaPath, hfRepo)
 
 	cmd := exec.CommandContext(ctx, llamaPath, "download", "-hf", hfRepo)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
 	log.Printf("[download] command: %s", cmd.String())
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("failed to create stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("failed to create stderr pipe: %w", err)
-	}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start download: %w", err)
 	}
 
-	var stderrBuf strings.Builder
 	var wg sync.WaitGroup
-
-	wg.Add(2)
-
-	// Discard stdout (download progress goes to stderr)
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(io.Discard, stdout)
-	}()
-
-	// Stream stderr for logging
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			line := scanner.Text()
-			log.Printf("[download] %s", line)
-			stderrBuf.WriteString(line + "\n")
-		}
-		if scanner.Err() != nil {
-			log.Printf("[download] stderr error: %v", scanner.Err())
-		}
-	}()
+	wg.Add(1)
 
 	errChan := make(chan error, 1)
 	go func() {
+		defer wg.Done()
 		errChan <- cmd.Wait()
 	}()
 
@@ -749,13 +721,13 @@ func DownloadModel(ctx context.Context, hfRepo string) error {
 		wg.Wait()
 		if err != nil {
 			log.Printf("[download] failed: %v", err)
-			log.Printf("[download] stderr: %s", stderrBuf.String())
-			return fmt.Errorf("download failed: %w (stderr: %s)", err, stderrBuf.String())
+			return fmt.Errorf("download failed: %w", err)
 		}
 		log.Printf("[download] completed successfully: %s", hfRepo)
 		return nil
 	}
 }
+
 // GPUStats holds structured GPU metrics.
 type GPUStats struct {
 	Temperature float64 // °C (junction/edge)

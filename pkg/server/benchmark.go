@@ -46,7 +46,7 @@ func parseBenchmarkOutput(output string, m model.Model) *model.BenchmarkResult {
 			continue
 		}
 
-	// fields[0] is empty (leading |), fields[-1] is empty (trailing |)
+		// fields[0] is empty (leading |), fields[-1] is empty (trailing |)
 		// fields[-2] = t/s value, fields[-3] = test name
 		fields := strings.Split(line, "|")
 		if len(fields) < 8 {

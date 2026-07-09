@@ -101,13 +101,14 @@ type App struct {
 	cursorPos int // model or option index in selection/launch views
 
 	// Catalog state
-	catalog            []server.CatalogModel
-	catalogCursor      int
-	downloading        string
-	downloadBusy       bool
-	downloadCancel     context.CancelFunc
-	downloadCancelled  bool
-	downloadProgress   string
+	catalog           []server.CatalogModel
+	catalogCursor     int
+	downloading       string
+	downloadBusy      bool
+	downloadCancel    context.CancelFunc
+	downloadCancelled bool
+	downloadProgress  string
+	// placeholder
 
 	// Running llama server detection
 	runtimeServers []server.RunningLlamaProcess
@@ -135,16 +136,17 @@ type App struct {
 
 	// Spinner for busy states
 	spin spinner.Model
+	// placeholder
 
 	// Search state
-	searchInput   textinput.Model
-	searchResults []server.SearchHFModel
-	searchQuery   string
-	repoFiles     []server.HFFile
-	selectedRepo  string
+	searchInput      textinput.Model
+	searchResults    []server.SearchHFModel
+	searchQuery      string
+	repoFiles        []server.HFFile
+	selectedRepo     string
 	fileCursor       int
 	fileScrollOffset int
-	searchBusy    bool
+	searchBusy       bool
 
 	searchCursor int
 
@@ -152,6 +154,7 @@ type App struct {
 	modalShow     bool
 	modalMessage  string
 	modalCallback func() tea.Cmd
+	termHeight    int // terminal height for modal overlay
 }
 
 // NewApp initializes a new application instance.
@@ -212,11 +215,12 @@ func (a *App) Init() tea.Cmd {
 // Update handles all incoming messages.
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
-		case tea.WindowSizeMsg:
-			a.termWidth = m.Width
-			return a, nil
+	case tea.WindowSizeMsg:
+		a.termWidth = m.Width
+		a.termHeight = m.Height
+		return a, tea.Cmd(tea.ClearScreen)
 
-		case tea.KeyMsg:
+	case tea.KeyMsg:
 		if a.modalShow {
 			if m.String() == "y" {
 				a.modalShow = false
@@ -280,7 +284,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.searchCursor++
 				return a, nil
 			}
-		if m.String() == "enter" && len(a.searchResults) > 0 && a.searchCursor < len(a.searchResults) && !a.searchBusy && !a.downloadBusy {
+			if m.String() == "enter" && len(a.searchResults) > 0 && a.searchCursor < len(a.searchResults) && !a.searchBusy && !a.downloadBusy {
 				a.selectedRepo = a.searchResults[a.searchCursor].ModelID
 				a.repoFiles = nil
 				a.fileCursor = 0
@@ -752,18 +756,20 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case messages.DownloadCompleteMsg:
-		a.downloadBusy = false
 		a.downloadCancel = nil
 		if a.downloadCancelled {
 			a.downloadCancelled = false
 			a.downloading = ""
+			a.downloadBusy = false
 			return a, nil
 		}
 		if m.Error != nil {
+			a.downloadBusy = false
 			a.err = fmt.Errorf("download failed: %w", m.Error)
 			return a, nil
 		}
 		a.downloading = ""
+		a.downloadBusy = false
 		// Refresh model list after download
 		return a, tea.Batch(a.refreshModels(), func() tea.Msg {
 			return messages.SuccessMsg{Message: fmt.Sprintf("Downloaded %s successfully", m.Model)}
@@ -964,13 +970,16 @@ func (a *App) View() string {
 	}
 
 	if a.modalShow {
-		return viewContent + "\n" + a.renderModal()
+		return a.renderModal()
 	}
-	return viewContent
+	return a.theme.GradientBar(a.terminalWidth()) + "\n" + viewContent
 }
 
-// renderModal renders a centered confirmation modal.
+// renderModal renders a centered confirmation modal overlay with gradient bars.
 func (a *App) renderModal() string {
+	// Consistent header bar at top, matching other views
+	header := a.theme.Header.Render("Confirmation")
+
 	modalContent := fmt.Sprintf("  %s\n\n  %s %s\n  %s %s",
 		a.modalMessage,
 		a.theme.Success.Render("[y]"),
@@ -982,15 +991,25 @@ func (a *App) renderModal() string {
 	modalBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(theme.ColorOrange).
-		Padding(1, 2).
-		Width(40).
+		Padding(1, 3).
+		Width(60).
 		Align(lipgloss.Center).
 		Render(modalContent)
 
-	return lipgloss.NewStyle().
-		Width(a.terminalWidth()).
-		Align(lipgloss.Center).
-		Render(modalBox)
+	// Fixed height: 1 (content) + 2 (border) = 8 lines for modalBox
+	boxHeight := 8
+	// Total with padding: 12 lines
+	totalHeight := boxHeight + 4
+
+	width := a.termWidth
+	height := a.termHeight
+	if height <= 0 {
+		height = 24
+	}
+
+	gradient := a.theme.GradientBar(a.terminalWidth())
+	placed := lipgloss.Place(width, totalHeight, lipgloss.Center, lipgloss.Center, modalBox)
+	return gradient + "\n" + header + "\n" + placed + "\n" + gradient
 }
 
 // renderGPUStats renders the GPU stats panel. Returns empty string if no GPU detected.
@@ -1071,10 +1090,6 @@ func renderStatusPanes(a *App) string {
 func (a *App) renderSelectionView() string {
 	var s strings.Builder
 
-	// Gradient accent bar
-	s.WriteString(a.theme.GradientBar(a.terminalWidth()))
-	s.WriteString("\n\n")
-
 	// ASCII Art header
 	banner := `
    ╔═══════════════════════════════════╗
@@ -1098,7 +1113,7 @@ func (a *App) renderSelectionView() string {
 
 	// Download progress indicator
 	if a.downloadBusy {
-		s.WriteString(a.theme.Warning.Render(fmt.Sprintf("  %s Downloading: %s\n\n", a.spin.View(), a.downloading)))
+		s.WriteString(a.theme.Warning.Render(fmt.Sprintf("  %s Downloading: %s\n", a.spin.View(), a.downloading)))
 	}
 
 	// Models panel
@@ -1118,24 +1133,6 @@ func (a *App) renderSelectionView() string {
 		modelsPanel := a.theme.PanelMagenta.Render(modelContent)
 		s.WriteString(modelsPanel)
 	}
-
-	s.WriteString("\n")
-
-	// Commands panel
-	cmds := fmt.Sprintf("  %s/%s Navigate | %s Select | %s Search HF | %s Refresh | %s Kill | %s Catalog | %s Bench | %s Delete | %s Quit",
-		a.theme.Key.Render("↑"), a.theme.Key.Render("↓"),
-		a.theme.Key.Render("Enter"),
-		a.theme.Key.Render("s"),
-		a.theme.Key.Render("r"),
-		a.theme.Key.Render("k"),
-		a.theme.Key.Render("d"),
-		a.theme.Key.Render("m"),
-		a.theme.Key.Render("x"),
-		a.theme.Key.Render("q"),
-	)
-	cmdContent := a.theme.PanelHeader("Commands", a.theme.PanelTitleYellow) + "\n" + cmds
-	cmdsPanel := a.theme.PanelGreen.Render(cmdContent)
-	s.WriteString(cmdsPanel)
 
 	// Status bar footer
 	hints := []string{"↑↓ Navigate", "Enter Select", "s Search", "d Catalog", "r Refresh", "k Kill", "m Bench", "x Delete", "q Quit"}
@@ -1564,23 +1561,50 @@ func (a *App) renderBenchmarkView() string {
 		return s
 	}
 
-	s += fmt.Sprintf("%-4s %-30s %10s %10s %10s\n",
+	s += fmt.Sprintf("  %-4s %-50s %10s %10s %12s\n",
 		"#", "Model", "PP t/s", "SGT t/s", "Date")
-	s += "─────────────────────────────────────────────────────────────────────\n"
+	s += a.renderBenchmarkDivider()
 
 	for i, r := range a.benchmarkResults {
 		name := r.ModelName
-		if len(name) > 30 {
-			name = name[:27] + "..."
+		if len(name) > 50 {
+			name = name[:47] + "..."
 		}
-		s += fmt.Sprintf("%-4d %-30s %10.1f %10.1f %10s\n",
+		s += fmt.Sprintf("  %-4d %-50s %10.1f %10.1f %12s\n",
 			i+1, name, r.PPTokensPerSecond,
 			r.SGTTokensPerSecond, r.Timestamp[:10])
+		if i < len(a.benchmarkResults)-1 {
+			s += a.renderBenchmarkDivider()
+		}
 	}
 
 	hints := []string{"b Back", "c Clear", "m Run Again"}
 	s += a.theme.StatusBar("Benchmarks", hints, a.terminalWidth())
 	return s
+}
+
+// renderBenchmarkDivider renders a rainbow-colored separator line between benchmark rows.
+func (a *App) renderBenchmarkDivider() string {
+	// Match format: "  %-4s %-50s %10s %10s %12s\n"
+	divider := fmt.Sprintf("  %-4s %-50s %10s %10s %12s\n", "───", "──────────────────────────────────────────────", "─────────", "─────────", "───────────")
+	colors := []lipgloss.Color{
+		theme.ColorRed, theme.ColorOrange, theme.ColorYellow, theme.ColorLime,
+		theme.ColorMint, theme.ColorCyan, theme.ColorLightBlue, theme.ColorPurple, theme.ColorPink,
+	}
+	runes := []rune(divider)
+	chunkSize := len(runes) / len(colors)
+	if chunkSize == 0 {
+		chunkSize = 1
+	}
+	var result strings.Builder
+	colorIdx := 0
+	for i := 0; i < len(runes); i++ {
+		if i > 0 && i%chunkSize == 0 && colorIdx < len(colors)-1 {
+			colorIdx++
+		}
+		result.WriteString(lipgloss.NewStyle().Foreground(colors[colorIdx]).Render(string(runes[i])))
+	}
+	return result.String()
 }
 
 // renderCatalogView renders the model download catalog.
@@ -1591,14 +1615,14 @@ func (a *App) renderCatalogView() string {
 	s.WriteString(renderStatusPanes(a))
 
 	if a.downloadBusy {
-		s.WriteString("\n  " + a.theme.Warning.Render(fmt.Sprintf("%s Downloading: %s", a.spin.View(), a.downloading)) + "\n")
+		s.WriteString("\n  " + a.theme.Warning.Render(fmt.Sprintf("%s Downloading: %s", a.spin.View(), a.downloading)))
 		hints := []string{"b Cancel", "esc Background"}
 		s.WriteString(a.theme.StatusBar("Downloading", hints, a.terminalWidth()))
 		return s.String()
 	}
 
 	if a.downloadProgress != "" {
-		s.WriteString("\n  " + a.theme.Success.Render("✓ " + a.downloadProgress) + "\n")
+		s.WriteString("\n  " + a.theme.Success.Render("✓ "+a.downloadProgress) + "\n")
 	}
 
 	if len(a.catalog) == 0 {
@@ -1712,7 +1736,7 @@ func (a *App) renderSearchView() string {
 	}
 
 	if a.downloadBusy {
-		s.WriteString("\n  " + a.theme.Warning.Render(fmt.Sprintf("%s Downloading: %s", a.spin.View(), a.downloading)) + "\n")
+		s.WriteString("\n  " + a.theme.Warning.Render(fmt.Sprintf("%s Downloading: %s", a.spin.View(), a.downloading)))
 		hints := []string{"b Cancel", "esc Background"}
 		s.WriteString(a.theme.StatusBar("Downloading", hints, a.terminalWidth()))
 		return s.String()

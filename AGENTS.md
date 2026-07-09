@@ -140,6 +140,14 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
 - [x] Auto-setup `~/.claude/settings.json` for local usage (needs testing)
 - [x] Improved HF search with `library=gguf&apps=llama.cpp` filters
 - [x] Model deletion from cache (`x` key in selection view)
+- [x] **UI Overhaul (Phases 1-5)**:
+  - Rainbow border colors per panel (cyan GPU, magenta models, yellow servers, green commands, blue general, orange search/catalog)
+  - Gradient accent bars at top/bottom of selection view
+  - Terminal width tracking via `tea.WindowSizeMsg` for dynamic sizing
+  - Persistent status bar footer on all views with contextual key hints
+  - Confirmation modals for destructive actions (delete model, kill server)
+  - Progress bars for model downloads (bubbles/progress)
+  - Table component for benchmark results (bubbles/table)
 
 ---
 
@@ -147,7 +155,7 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
 
 
 ### TODO
-- [ ] UI enhancements — more needed to improve look using Charm libraries
+- [ ] UI enhancements — more polish needed
 
 
 ### Future
