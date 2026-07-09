@@ -19,7 +19,7 @@ Built with the [Charmbracelet](https://charm.land) ecosystem: Bubble Tea, Lip Gl
 - **Process Control**: Start, stop, and manage the lifecycle of your running models.
 - **Auto-Config for AI Tools**: Automatically sets up config files for Claude Code, Opencode, and Crush to connect to your local llama server.
 - **Developer Friendly**: Includes a built-in `MockRunner` for rapid UI development and testing.
-- **Polished UI**: Rainbow-colored panels per context, gradient accent bars, persistent status bar footer, confirmation modals, progress bars for downloads, and tabular benchmark results.
+- **Polished UI**: Rainbow-colored panels per context, gradient accent bars, persistent status bar footer, confirmation modals, animated download spinner, and tabular benchmark results.
 
 ## 🚀 Getting Started
 
@@ -93,6 +93,12 @@ Destructive actions (delete model, kill server) show a confirmation modal. Press
 | `↑` / `↓` | Navigate quant files |
 | `Enter` | Add to catalog |
 | `b` / `Esc` | Back to search |
+
+### Download View
+
+| Key | Action |
+|-----|--------|
+| `b` / `Esc` | Cancel or background download |
 
 ### Launch Options View
 

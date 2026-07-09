@@ -70,7 +70,7 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
 
 - `DownloadModel()` uses `llama download -hf <repo:quant>` command with a cancellable context
 - Download runs in a `tea.Cmd` closure with 30/60 min timeout based on model size
-- `downloadBusy` flag + spinner show progress in catalog view and selection view
+- `downloadBusy` flag + animated spinner indicate download in progress in catalog and selection views
 - `downloadCancel` context.CancelFunc allows cancellation via `b` key (goBack)
 - `IsModelDownloaded()` pre-check skips already-cached models
 - Download complete triggers model list refresh via `refreshModels()`
@@ -128,7 +128,7 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
 - [x] Search UX — auto-blur input after results, focus restore on back nav, spinner during search
 - [x] Model catalog in user config (`~/.clauncher/models.json`)
 - [x] Catalog download status indicators (✓/✗)
-- [x] Model downloads from catalog — cancellable via context, spinner, progress feedback
+- [x] Model downloads from catalog — cancellable via context, animated spinner
 - [x] Arrow key navigation for model and option selection
 - [x] Configurable port and context length via UI
 - [x] Find and kill existing llama processes before starting new ones
@@ -146,7 +146,7 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
   - Terminal width tracking via `tea.WindowSizeMsg` for dynamic sizing
   - Persistent status bar footer on all views with contextual key hints
   - Confirmation modals for destructive actions (delete model, kill server)
-  - Progress bars for model downloads (bubbles/progress)
+  - Animated spinner for model downloads (bubbles/spinner)
   - Table component for benchmark results (bubbles/table)
 
 ---
@@ -166,6 +166,7 @@ pkg/ui/theme/theme.go          — Lip Gloss color/style definitions
 ## Known Issues & Debugging
 
 - **Environment**: If running in a restricted shell, the TUI may fail with `could not open a new TTY`. Use the `MockRunner` for UI development.
+- **Download Progress**: `llama download` bypasses stdout/stderr pipes (writes directly to /dev/tty), so pipe-based progress parsing is impossible. HF cache file-size polling was attempted but unreliable — reverted to animated spinner. A more robust progress mechanism (e.g., parsing `llama download` TTY output, or using HF API for expected sizes) would be needed for accurate percentages.
 
 ---
 
